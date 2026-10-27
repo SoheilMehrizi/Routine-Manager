@@ -46,11 +46,8 @@ The server calls `POST {base}/chat/completions` (OpenAI-compatible). Auth header
 dashboard shows exactly what ("What data is sent?"). The base URL must be https, port 443 and resolve to a public
 address; set `AI_ALLOWED_HOSTS` in `.env` to allow only specific hosts.
 
-**07:00 daily agenda**: Settings > Telegram Bot API: paste the token from @BotFather, press **Link chat**, send
-`/start CODE` to your bot. The scheduler (inside the API container, checks every 30 s) sends the agenda to each
-linked user at 07:00 in the time zone saved in their settings, once per user and local date (retried up to 5 times,
-and only until 10:00 local time so a stale agenda is never sent late). **Send now** tests delivery immediately;
-Settings lists the last deliveries with any error. Run exactly one API container.
+**Daily agenda schedule**: Settings > Integrations > Telegram Bot API: paste the token from @BotFather, press **Link chat**, send
+`/start CODE` to your bot. In Settings, opt in to **Email delivery** to also send the agenda to your verified Google account email. Email uses the server's shared SMTP relay; set `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, and `SMTP_FROM` in `.env` and restart the stack. Port 587 uses STARTTLS; port 465 uses implicit TLS. Leave SMTP unset to keep email disabled. The scheduler (inside the API container, checks every 30 s) sends each selected channel at the user-configured **Agenda time** in Settings and saved time zone, once per channel and local date (retried up to 5 times, and only within the three-hour catch-up window so a stale agenda is never sent late). **Send now** and **Send email now** test delivery immediately; **Test email** sends a clearly marked sample to the signed-in email address using the same HTML template and plain-text fallback. Settings lists recent deliveries. Run exactly one API container.
 
 **Streak tracker**: Dashboard heatmap of completed activities per day for the last year; click a day for its logs.
 
@@ -61,7 +58,7 @@ Settings lists the last deliveries with any error. Run exactly one API container
 ## 6. Status (read before relying on it)
 Implemented: Google sign-in (server-verified token), per-user records with server-side ownership,
 encrypted write-only secrets, per-user read-only Google Calendar (OAuth, refresh, revoke on disconnect),
-AI recommendations, Telegram linking and 07:00 agenda, streak heatmap, one-tap logging and quick add,
+AI recommendations, Telegram linking and opt-in email/Telegram agenda with a configurable delivery time, streak heatmap, one-tap logging and quick add,
 Jalali/Gregorian calendar, English/Persian RTL, Light / Dark / System theme (Pastel Pink palette).
 
 Verified by the author: the unit tests above (they cover the helper logic and the page logic with a fake API).
