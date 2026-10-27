@@ -7,8 +7,8 @@ import socket
 import urllib.parse
 from zoneinfo import ZoneInfo
 
-AGENDA_HOUR = 7          # local time the daily agenda is due
-CATCHUP_HOURS = 3        # if the server was down at 07:00, still send until 10:00, never later
+AGENDA_TIME = "07:00"    # default local time the daily agenda is due
+CATCHUP_MINUTES = 180    # if the server is down, send for up to three hours after the scheduled time
 
 
 def user_zone(name):
@@ -18,10 +18,23 @@ def user_zone(name):
         return ZoneInfo("UTC")
 
 
-def is_due(now_utc, tzname, hour=AGENDA_HOUR, window=CATCHUP_HOURS):
-    """(due?, user's local date). Due from `hour`:00 local time until `hour+window`:00."""
+def valid_agenda_time(value):
+    """Return a normalized 24-hour HH:MM schedule, or None if invalid."""
+    if not isinstance(value, str) or not re.fullmatch(r"(?:[01][0-9]|2[0-3]):[0-5][0-9]", value):
+        return None
+    return value
+
+
+def is_due(now_utc, tzname, schedule=AGENDA_TIME, window_minutes=CATCHUP_MINUTES):
+    """(due?, user's local date). Due for `window_minutes` after local HH:MM."""
     local = now_utc.astimezone(user_zone(tzname))
-    return hour <= local.hour < hour + window, local.date().isoformat()
+    schedule = valid_agenda_time(schedule) or AGENDA_TIME
+    hour, minute = map(int, schedule.split(":"))
+    local_minutes = local.hour * 60 + local.minute
+    schedule_minutes = hour * 60 + minute
+    elapsed = (local_minutes - schedule_minutes) % (24 * 60)
+    scheduled_date = local.date() - (dt.timedelta(days=1) if local_minutes < schedule_minutes else dt.timedelta())
+    return elapsed < window_minutes, scheduled_date.isoformat()
 
 
 def occurs(routine, day):
@@ -33,6 +46,9 @@ def occurs(routine, day):
     except ValueError:
         created = day
     rec = routine.get("rec", "daily")
+    if rec == "custom":
+        days = routine.get("days") or []
+        return day >= created and (day.weekday() + 1) % 7 in days
     if rec == "weekly":
         return day.weekday() == created.weekday()
     if rec == "monthly":

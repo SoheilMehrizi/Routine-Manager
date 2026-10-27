@@ -9,6 +9,7 @@ prevents double sends even so).
 """
 import datetime as dt
 import logging
+import math
 import os
 import re
 import secrets
@@ -34,7 +35,8 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
 from .logic import (auth_header, build_agenda, build_ai_messages, is_due, safe_public_https_url, schemes_to_try,
-                    strip_think, user_zone, validate_stats)
+                    strip_think, user_zone, validate_stats, valid_agenda_time)
+from .email_service import MailConfigError, MailDeliveryError, email_configured, send_agenda_email, smtp_config_status
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("mel")  # never log tokens, keys or message bodies
@@ -148,10 +150,30 @@ def tg_call(token, method, **params):
     return data["result"], ""
 
 
+def normalize_record_data(kind: str, data: dict) -> dict:
+    """Keep focus sessions as first-class activity log entries in JSONB records."""
+    clean = {k: v for k, v in data.items() if k != "id"}
+    if kind == "logs" and (clean.get("focus_session") or clean.get("activity_type") == "focus"):
+        clean["focus_session"] = True
+        clean["activity_type"] = "focus"
+        if clean.get("result") not in ("Completed", "Partial"):
+            raise HTTPException(422, "Focus activity result must be Completed or Partial")
+        duration = clean.get("dur")
+        if isinstance(duration, bool) or not isinstance(duration, (int, float)) or not math.isfinite(duration) or duration <= 0:
+            raise HTTPException(422, "Focus activity duration must be a positive number of minutes")
+        clean["dur"] = int(round(duration))
+        clean.setdefault("title", "Focus session")
+    elif kind == "routines" and clean.get("rec") == "custom":
+        days = clean.get("days")
+        if not isinstance(days, list) or not days or any(isinstance(day, bool) or not isinstance(day, int) or day < 0 or day > 6 for day in days):
+            raise HTTPException(422, "Custom routines need one or more weekdays from 0 to 6")
+        clean["days"] = sorted(set(days))
+    return clean
+
 def load_data(s: Session, uid: int) -> dict:
     out = {k: [] for k in ("tasks", "routines", "goals", "logs")}
     for r in s.scalars(select(Record).where(Record.user_id == uid, Record.kind.in_(list(out)))):
-        out[r.kind].append({**r.data, "id": r.id})
+        out[r.kind].append({**normalize_record_data(r.kind, r.data), "id": r.id})
     return out
 
 
@@ -161,37 +183,54 @@ def agenda_for(s: Session, user: User, local_date: str) -> str:
                         os.environ.get("PUBLIC_URL", ""))
 
 
+def email_agenda(user: User, local_date: str, body: str, test: bool = False) -> str:
+    try:
+        send_agenda_email(user.email, local_date, body, (user.prefs or {}).get("lang", "en"), test, schedule=(user.prefs or {}).get("agenda_time", "07:00"))
+    except (MailConfigError, MailDeliveryError) as exc:
+        return str(exc)
+    return ""
+
 # ------------------------------------------------------------------ 07:00 agenda scheduler
 def run_due_agendas():
     now = now_utc()
     with SessionLocal() as s:
-        for rec in s.scalars(select(Integration).where(Integration.name == "telegram")).all():
-            chat = rec.config.get("chat_id")
-            user = s.get(User, rec.user_id)
-            if not chat or not user:
+        for user in s.scalars(select(User)).all():
+            prefs = user.prefs or {}
+            tg = get_integ(s, user.id, "telegram")
+            channels = []
+            if tg and tg.config.get("chat_id"):
+                channels.append(("agenda", "telegram", tg))
+            if prefs.get("agenda_email") and email_configured():
+                channels.append(("agenda_email", "email", None))
+            if not channels:
                 continue
-            due, local_date = is_due(now, (user.prefs or {}).get("tz"))
+            due, local_date = is_due(now, prefs.get("tz"), prefs.get("agenda_time", "07:00"))
             if not due:
                 continue
-            d = s.scalar(select(Delivery).where(Delivery.user_id == user.id, Delivery.kind == "agenda", Delivery.local_date == local_date))
-            if d and (d.status == "sent" or d.attempts >= 5):
-                continue
-            if d and (now - d.updated_at).total_seconds() < 60:  # back off between retries
-                continue
-            if not d:
-                d = Delivery(user_id=user.id, kind="agenda", local_date=local_date)
-                s.add(d)
-                try:
-                    s.commit()  # claim the (user, day) slot first: a second worker hits the unique key and skips
-                except IntegrityError:
-                    s.rollback()
+            for kind, channel, rec in channels:
+                d = s.scalar(select(Delivery).where(Delivery.user_id == user.id, Delivery.kind == kind, Delivery.local_date == local_date))
+                if d and (d.status == "sent" or d.attempts >= 5):
                     continue
-            res, err = tg_call(secret_of(rec), "sendMessage", chat_id=chat, text=agenda_for(s, user, local_date),
-                               disable_web_page_preview=True)
-            d.attempts += 1
-            d.status, d.last_error = ("sent", "") if res else ("failed", err)
-            s.commit()
-            log.info("agenda user=%s date=%s status=%s attempts=%s", user.id, local_date, d.status, d.attempts)
+                if d and (now - d.updated_at).total_seconds() < 60:
+                    continue
+                if not d:
+                    d = Delivery(user_id=user.id, kind=kind, local_date=local_date)
+                    s.add(d)
+                    try:
+                        s.commit()
+                    except IntegrityError:
+                        s.rollback(); continue
+                body = agenda_for(s, user, local_date)
+                if channel == "email":
+                    err = email_agenda(user, local_date, body); sent = not err
+                else:
+                    res, err = tg_call(secret_of(rec), "sendMessage", chat_id=rec.config["chat_id"], text=body,
+                                       disable_web_page_preview=True)
+                    sent = bool(res)
+                d.attempts += 1
+                d.status, d.last_error = ("sent", "") if sent else ("failed", err)
+                s.commit()
+                log.info("agenda channel=%s user=%s date=%s status=%s attempts=%s", channel, user.id, local_date, d.status, d.attempts)
 
 
 def scheduler_loop(stop: threading.Event):
@@ -268,12 +307,16 @@ def me(u: User = Depends(current_user)):
 
 @app.put("/api/me/prefs")
 def set_prefs(prefs: dict, u: User = Depends(current_user), s: Session = Depends(db)):
-    clean = {k: prefs[k] for k in ("lang", "cal", "tz", "theme") if k in prefs}
+    clean = {k: prefs[k] for k in ("lang", "cal", "tz", "theme", "agenda_email", "agenda_time") if k in prefs}
+    if "agenda_email" in clean:
+        clean["agenda_email"] = bool(clean["agenda_email"])
     if "tz" in clean:
         try:
             ZoneInfo(str(clean["tz"]))
         except Exception:
             raise HTTPException(422, "Unknown time zone")
+    if "agenda_time" in clean and not valid_agenda_time(clean["agenda_time"]):
+        raise HTTPException(422, "Agenda time must use 24-hour HH:MM format")
     u.prefs = clean
     s.add(u)
     s.commit()
@@ -461,7 +504,7 @@ def tg_link_check(u: User = Depends(current_user), s: Session = Depends(db)):
     rec.config = cfg
     s.commit()
     if linked:
-        tg_call(token, "sendMessage", chat_id=cfg["chat_id"], text="✅ Linked! Your agenda will arrive here every day at 07:00.")
+        tg_call(token, "sendMessage", chat_id=cfg["chat_id"], text="✅ Linked! Your agenda will arrive here every day at " + str((u.prefs or {}).get("agenda_time") or "07:00") + ".")
     return {"linked": linked}
 
 
@@ -469,8 +512,10 @@ def tg_link_check(u: User = Depends(current_user), s: Session = Depends(db)):
 def agenda_status(u: User = Depends(current_user), s: Session = Depends(db)):
     rec = get_integ(s, u.id, "telegram")
     rows = s.scalars(select(Delivery).where(Delivery.user_id == u.id).order_by(Delivery.local_date.desc()).limit(5))
-    return {"linked": bool(rec and rec.config.get("chat_id")), "tz": (u.prefs or {}).get("tz") or "UTC", "time": "07:00",
-            "deliveries": [{"date": d.local_date, "status": d.status, "attempts": d.attempts, "error": d.last_error} for d in rows]}
+    return {"linked": bool(rec and rec.config.get("chat_id")), "tz": (u.prefs or {}).get("tz") or "UTC", "time": (u.prefs or {}).get("agenda_time") or "07:00",
+            "email": u.email, "email_enabled": bool((u.prefs or {}).get("agenda_email")), "email_configured": email_configured(),
+            "email_setup_error": smtp_config_status()[1],
+            "deliveries": [{"date": d.local_date, "kind": d.kind, "status": d.status, "attempts": d.attempts, "error": d.last_error} for d in rows]}
 
 
 @app.post("/api/agenda/send-now")
@@ -484,6 +529,34 @@ def agenda_send_now(u: User = Depends(current_user), s: Session = Depends(db)):
                        disable_web_page_preview=True)
     if res is None:
         raise HTTPException(502, "Telegram: " + err)
+    return {"sent": True}
+
+
+@app.post("/api/agenda/test-email")
+def agenda_test_email(u: User = Depends(current_user), s: Session = Depends(db)):
+    cooldown(("agenda-email-test", u.id), 30)
+    local_date = now_utc().astimezone(user_zone((u.prefs or {}).get("tz"))).date().isoformat()
+    try:
+        send_agenda_email(u.email, local_date, agenda_for(s, u, local_date), (u.prefs or {}).get("lang", "en"), test=True, schedule=(u.prefs or {}).get("agenda_time", "07:00"))
+    except MailConfigError as exc:
+        raise HTTPException(503, str(exc))
+    except MailDeliveryError as exc:
+        raise HTTPException(502, str(exc))
+    return {"sent": True, "to": u.email}
+
+
+@app.post("/api/agenda/send-now/email")
+def agenda_send_now_email(u: User = Depends(current_user), s: Session = Depends(db)):
+    cooldown(("agenda-email", u.id), 30)
+    if not (u.prefs or {}).get("agenda_email"):
+        raise HTTPException(409, "Enable email delivery first")
+    local_date = now_utc().astimezone(user_zone((u.prefs or {}).get("tz"))).date().isoformat()
+    try:
+        send_agenda_email(u.email, local_date, agenda_for(s, u, local_date), (u.prefs or {}).get("lang", "en"), schedule=(u.prefs or {}).get("agenda_time", "07:00"))
+    except MailConfigError as exc:
+        raise HTTPException(503, str(exc))
+    except MailDeliveryError as exc:
+        raise HTTPException(502, str(exc))
     return {"sent": True}
 
 
@@ -557,15 +630,17 @@ def ai_recommendations(body: AiIn, u: User = Depends(current_user), s: Session =
 @app.get("/api/{kind}")
 def list_records(kind: str, u: User = Depends(current_user), s: Session = Depends(db)):
     rows = s.scalars(select(Record).where(Record.user_id == u.id, Record.kind == kind_or_404(kind)))
-    return [{**r.data, "id": r.id} for r in rows]
+    return [{**normalize_record_data(kind, r.data), "id": r.id} for r in rows]
 
 
 @app.post("/api/{kind}", status_code=201)
 def create_record(kind: str, data: dict, u: User = Depends(current_user), s: Session = Depends(db)):
     rid = str(uuid.uuid4())
-    s.add(Record(id=rid, user_id=u.id, kind=kind_or_404(kind), data={k: v for k, v in data.items() if k != "id"}))
+    record_kind = kind_or_404(kind)
+    clean = normalize_record_data(record_kind, data)
+    s.add(Record(id=rid, user_id=u.id, kind=record_kind, data=clean))
     s.commit()
-    return {**data, "id": rid}
+    return {**clean, "id": rid}
 
 
 ID_RE = re.compile(r"^[A-Za-z0-9_-]{4,40}$")
@@ -577,7 +652,7 @@ def upsert_record(kind: str, rid: str, data: dict, u: User = Depends(current_use
     kind_or_404(kind)
     if not ID_RE.match(rid):
         raise HTTPException(422, "Invalid id")
-    clean = {k: v for k, v in data.items() if k != "id"}
+    clean = normalize_record_data(kind, data)
     rec = s.get(Record, (rid, u.id))
     if rec and rec.kind != kind:
         raise HTTPException(409, "Id already used by another collection")
