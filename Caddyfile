@@ -1,0 +1,28 @@
+# DOMAIN=localhost       -> https://localhost with Caddy's local certificate
+# DOMAIN=http://localhost -> plain HTTP for a quick local test
+# DOMAIN=life.example.com -> automatic Let's Encrypt HTTPS (ports 80/443 must be reachable)
+{$DOMAIN} {
+	encode gzip
+	header {
+		X-Content-Type-Options nosniff
+		Referrer-Policy strict-origin-when-cross-origin
+		-Server
+	}
+	handle /api/* {
+		reverse_proxy api:8000
+	}
+	handle /auth/* {
+		reverse_proxy api:8000
+	}
+	handle /config.js {
+		header Content-Type application/javascript
+		header Cache-Control no-store
+		# an array on purpose: Caddy would treat {...} in a response body as a placeholder
+		respond `window.MEL_CONFIG=["{$GOOGLE_CLIENT_ID}",""];`
+	}
+	handle {
+		root * /srv
+		try_files {path} /index.html
+		file_server
+	}
+}
