@@ -2,7 +2,7 @@
 const fs = require('fs'), assert = require('assert');
 const html = fs.readFileSync(__dirname + '/../index.html', 'utf8');
 const js = html.match(/<script>([\s\S]*?)<\/script>/g).pop().replace(/<\/?script>/g, '');
-const EXPORTS = 'D,S,boot,R,openF,saveF,parseQ,streakOf,hmCounts,heat,aiCard,aiRun,aiStats,insights,loginView,integCard,quickLog,todayPanel,qaAdd,linkTg,toast,undo,pDash,pTasks,pRoutines,pGoals,pAct,pCal,pSet,tog,del,TODAY,addD,fmt,pick,fillR,setv';
+const EXPORTS = 'D,S,boot,R,openF,saveF,parseQ,streakOf,hmCounts,heat,aiCard,aiRun,aiStats,insights,loginView,integCard,quickLog,todayPanel,qaAdd,linkTg,toast,undo,pDash,pTasks,pRoutines,pGoals,pAct,pCal,pSet,tog,del,TODAY,addD,fmt,pick,fillR,setv,testEmail,previewEmail';
 
 function load({ backend = false, token = '', api = {} } = {}) {
   const els = {}, attrs = {}, timers = [], calls = [], toasts = [];
@@ -135,6 +135,23 @@ t('Telegram: link code shown, polling links the chat, agenda row turns Active', 
   L.X.boot(); await L.tick(); await L.tick(); L.X.linkTg(); await L.tick(); const h = L.el('ov').innerHTML;
   assert(h.includes('/start AB12CD34') && h.includes('t.me/mybot')); assert.strictEqual(L.timers.length, 1);
   await L.timers[0](); await L.tick(); assert(L.X.D.integ.telegram.linked); assert(/Every day at 07:00/.test(L.X.integCard()));
+});
+t('Email agenda preview works in standalone demo without a backend', () => {
+  const L = load(); const h = L.X.integCard(); assert(/Preview email/.test(h) && /disabled title=/.test(h) && /Test email/.test(h));
+  L.X.D.tasks.push({ id: 'html-safe', title: '<script>demo</script>', due: L.X.TODAY, status: 'To do' });
+  L.X.previewEmail(); const html = L.el('mailpreview').srcdoc;
+  assert(/My EveryDay Life/.test(html) && /EMAIL PREVIEW/.test(html) && /&lt;script&gt;demo&lt;\/script&gt;/.test(html));
+  assert(/This preview does not send an email/.test(L.el('ov').innerHTML));
+});
+t('Email agenda: configured Settings shows an email test action and sends the sample', async () => {
+  const L = load({ backend: true, token: 'tok', api: {
+    '/api/me': { email: 'planner@example.com', prefs: { tz: 'Asia/Tehran' } },
+    '/api/agenda/status': { email: 'planner@example.com', email_configured: true, email_enabled: false, linked: false, deliveries: [] },
+    'POST /api/agenda/test-email': { sent: true, to: 'planner@example.com' }
+  } });
+  L.X.boot(); await L.tick(); await L.tick(); L.X.integCard(); await L.tick();
+  const h = L.X.integCard(); assert(/Email delivery/.test(h) && /Test email/.test(h) && /planner@example.com/.test(h));
+  L.X.testEmail(); await L.tick(); assert(L.calls.includes('POST /api/agenda/test-email'));
 });
 t('Telegram: Link button only while not linked; agenda row inactive until linked', async () => {
   const L = load({ backend: true, token: 'tok', api: { '/api/integrations': [{ name: 'telegram', config: { bot: 'mybot', linked: false }, has_secret: true }] } });
