@@ -2,7 +2,7 @@
 const fs = require('fs'), assert = require('assert');
 const html = fs.readFileSync(__dirname + '/../index.html', 'utf8');
 const js = html.match(/<script>([\s\S]*?)<\/script>/g).pop().replace(/<\/?script>/g, '');
-const EXPORTS = 'blRepeatChanged,blReminderSettingsCard,blReminderDefaults,blSaveReminderDefaults,blReminderStatusHtml,blTrackingData,blDashboardCard,pBacklogTracking,blShowTracking,blShowQueue,blSchedulePreview,blConflicts,blSubAdd,blToggleSubtask,blCompleteLocal,blQueue,blOpen,blReorderTask,blReorderCategory,blToggle,blResetQueue,blDeleteCategory,blCategoryForm,blSaveCategory,blTaskForm,blSaveTask,blDeleteTask,blMove,pBacklog,openBacklog,saveBacklog,archiveBacklog,deleteBacklog,initDemoBacklogs,D,S,boot,R,openF,saveF,parseQ,streakOf,hmCounts,heat,aiCard,aiRun,aiStats,insights,loginView,integCard,quickLog,todayPanel,qaAdd,linkTg,toast,undo,pDash,pTasks,pRoutines,pGoals,pAct,pCal,pSet,tog,del,TODAY,addD,fmt,pick,fillR,setv,testEmail,previewEmail';
+const EXPORTS = 'blCalendarParts,blCalendarIso,blParseCalendarDate,blSwitchCalendar,blDateChanged,blPickDate,blClearDate,blOpenDatePicker,blNavigateDate,blRepeatChanged,blReminderSettingsCard,blReminderDefaults,blSaveReminderDefaults,blReminderStatusHtml,blTrackingData,blDashboardCard,pBacklogTracking,blShowTracking,blShowQueue,blSchedulePreview,blConflicts,blSubAdd,blToggleSubtask,blCompleteLocal,blQueue,blOpen,blReorderTask,blReorderCategory,blToggle,blResetQueue,blDeleteCategory,blCategoryForm,blSaveCategory,blTaskForm,blSaveTask,blDeleteTask,blMove,pBacklog,openBacklog,saveBacklog,archiveBacklog,deleteBacklog,initDemoBacklogs,D,S,boot,R,openF,saveF,parseQ,streakOf,hmCounts,heat,aiCard,aiRun,aiStats,insights,loginView,integCard,quickLog,todayPanel,qaAdd,linkTg,toast,undo,pDash,pTasks,pRoutines,pGoals,pAct,pCal,pSet,tog,del,TODAY,addD,fmt,pick,fillR,setv,testEmail,previewEmail';
 
 function load({ backend = false, token = '', api = {} } = {}) {
   const els = {}, attrs = {}, timers = [], calls = [], toasts = [];
@@ -332,6 +332,41 @@ t('Repeat every is hidden for No repeat and shown for active recurrence',()=>{
  for(const unit of ['day','week','month']){el('bl_repeat').value=unit;X.blRepeatChanged();assert(!el('bl_every_wrap').hidden);assert(!el('bl_every').disabled);assert(!el('bl_repeat_help').hidden)}
  el('bl_every').value='3';el('bl_repeat').value='';X.blRepeatChanged();el('bl_repeat').value='week';X.blRepeatChanged();assert.strictEqual(el('bl_every').value,'3');
  X.D.backlogs[0].tasks=[{id:'task1',title:'Repeat',recurrence:{unit:'week',every:3}}];X.blTaskForm(X.D.backlogs[0].id,'task1');assert(el('ov').innerHTML.includes('id="bl_every_wrap">'));assert(!el('ov').innerHTML.includes('id="bl_every_wrap" hidden'));
+});
+
+t('Gregorian/Jalali conversion matches Nowruz, leap days and Persian digit input',()=>{
+ const {X}=load();assert.deepStrictEqual(X.blCalendarParts('2026-11-07','persian'),{year:1405,month:8,day:16});
+ assert.strictEqual(X.blCalendarIso(1405,8,16,'persian'),'2026-11-07');assert.strictEqual(X.blParseCalendarDate('۱۴۰۵/۰۸/۱۶','persian'),'2026-11-07');
+ assert.strictEqual(X.blCalendarIso(1403,12,30,'persian'),'2025-03-20');assert.strictEqual(X.blCalendarIso(1404,1,1,'persian'),'2025-03-21');assert.throws(()=>X.blCalendarIso(1404,12,30,'persian'));
+ assert.strictEqual(X.blCalendarIso(2024,2,29,'gregory'),'2024-02-29');assert.throws(()=>X.blCalendarIso(2026,2,29,'gregory'));assert.throws(()=>X.blParseCalendarDate('1405/13/01','persian'));
+ for(const iso of ['0001-01-01','0622-03-21','2024-02-29','2026-11-07','2100-03-01','9999-12-31']){const p=X.blCalendarParts(iso,'persian');assert.strictEqual(X.blCalendarIso(p.year,p.month,p.day,'persian'),iso)}
+});
+t('calendar switching preserves both canonical dates, times and other unsaved fields',()=>{
+ const {X,el}=load();X.D.cfg.cal='gregory';X.openBacklog(X.D.backlogs[0].id);el('bl_title').value='Unsaved title';el('bl_start').value='2026-11-07T16:00';el('bl_deadline').value='2026-11-07T20:00';
+ assert(X.blSwitchCalendar('persian'));assert.strictEqual(el('bl_start_date').value,'1405/08/16');assert.strictEqual(el('bl_deadline_time').value,'20:00');assert.strictEqual(el('bl_start').value,'2026-11-07T16:00');assert.strictEqual(el('bl_title').value,'Unsaved title');assert.strictEqual(X.D.cfg.cal,'gregory');
+ assert(X.blSwitchCalendar('gregory'));assert.strictEqual(el('bl_deadline_date').value,'2026/11/07');assert.strictEqual(el('bl_deadline').value,'2026-11-07T20:00');
+});
+t('Jalali input and picker save ordinary ISO schedules with conflict tags intact',async()=>{
+ const {X,el}=load();X.D.cfg.cal='persian';const id=X.D.backlogs[0].id;X.openBacklog(id);assert(el('ov').innerHTML.includes('value="persian" selected'));
+ el('bl_title').value='Jalali list';el('bl_start_date').value='۱۴۰۵/۰۸/۱۶';el('bl_start_time').value='16:00';X.blDateChanged('start','date');el('bl_deadline_date').value='1405/08/16';el('bl_deadline_time').value='15:00';X.blDateChanged('deadline','date');
+ await X.saveBacklog(id);assert.strictEqual(X.D.backlogs[0].start,'2026-11-07T16:00');assert.strictEqual(X.D.backlogs[0].deadline,'2026-11-07T15:00');assert(X.D.backlogs[0].date_conflicts.includes('reversed_dates'));
+ X.openBacklog(id);el('bl_start').value='2026-11-07T16:00';el('bl_start_time').value='16:00';X.blPickDate('start','2026-11-08');assert.strictEqual(el('bl_start').value,'2026-11-08T16:00');assert.strictEqual(el('bl_start_date').value,'1405/08/17');
+ X.blClearDate('start');assert.strictEqual(el('bl_start').value,'');assert.strictEqual(el('bl_start_time').value,'');
+});
+t('calendar does not discard an invalid draft on switching or saving',async()=>{
+ const {X,el}=load();X.D.cfg.cal='persian';const id=X.D.backlogs[0].id;X.openBacklog(id);el('bl_title').value='Do not save';el('bl_start_date').value='1404/12/30';el('bl_start_time').value='12:00';X.blDateChanged('start','date');
+ assert.strictEqual(X.blSwitchCalendar('gregory'),false);assert.strictEqual(el('bl_start_date').value,'1404/12/30');assert.strictEqual(el('bl_date_calendar').value,'persian');await X.saveBacklog(id);assert.notStrictEqual(X.D.backlogs[0].title,'Do not save');assert(el('bl_error').textContent.includes('valid Jalali date'));
+});
+t('calendar picker renders and navigates Jalali month boundaries',()=>{
+ const {X,el}=load();X.D.cfg.cal='persian';X.openBacklog(X.D.backlogs[0].id);el('bl_start').value='2025-03-20T10:00';X.blOpenDatePicker('start');assert(!el('bl_start_picker').hidden);assert(el('bl_start_picker').innerHTML.includes('Esfand'));assert(el('bl_start_picker').innerHTML.includes('2025-03-20'));
+ X.blNavigateDate('start',1);assert(el('bl_start_picker').innerHTML.includes('Farvardin'));assert(el('bl_start_picker').innerHTML.includes('2025-03-21'));X.blNavigateDate('start',-1);assert(el('bl_start_picker').innerHTML.includes('Esfand'));
+});
+
+
+t('date picker handles backend calendar boundaries without accepting year zero',async()=>{
+ const {X,el}=load(),id=X.D.backlogs[0].id;X.D.cfg.cal='gregory';X.openBacklog(id);el('bl_start').value='9999-12-31T10:00';X.blOpenDatePicker('start');assert(el('bl_start_picker').innerHTML.includes('9999-12-31'));
+ X.D.cfg.cal='persian';X.openBacklog(id);el('bl_start').value='0001-01-01T10:00';X.blOpenDatePicker('start');assert(el('bl_start_picker').innerHTML.includes('0001-01-01'));assert(el('bl_start_picker').innerHTML.includes(' disabled'));
+ el('bl_title').value='Invalid year';el('bl_start').value='0000-01-01T10:00';await X.saveBacklog(id);assert.notStrictEqual(X.D.backlogs[0].title,'Invalid year');
 });
 
 (async () => { let bad = 0; for (const [n, f] of results) { try { await f(); console.log('ok   ' + n) } catch (e) { bad++; console.log('FAIL ' + n + '\n     ' + String(e.stack).split('\n').slice(0, 3).join('\n     ')) } } console.log(bad ? bad + ' failed' : 'all ' + results.length + ' passed'); process.exit(bad ? 1 : 0) })();

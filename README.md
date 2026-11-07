@@ -127,8 +127,7 @@ the frontend checks. The API was rebuilt locally from its cached dependency imag
 
 Use **Edit list**, **Edit category**, or the task editor to set optional start times
 and deadlines. Values are local wall times in the account's saved time zone; date
-summaries use the selected display calendar. Date/time inputs use the browser's
-native calendar. A start after its deadline, or dates outside the enclosing list
+summaries use the selected display calendar. Backlog editors provide their own Gregorian/Jalali date picker and a separate time input. A start after its deadline, or dates outside the enclosing list
 or category, is allowed with a live warning and visible conflict tags. Tags are
 recomputed after edits and moves; clients cannot suppress them by sending tags.
 Missing dates do not impose or inherit additional bounds.
@@ -271,3 +270,31 @@ Backlog recurrence form correction: No repeat hides and disables Repeat every an
 its explanatory text. Selecting a repeat unit shows them immediately; switching
 back and forth preserves the entered interval. Existing recurring tasks open with
 their interval visible.
+
+### Gregorian/Jalali backlog date entry
+
+List, category and task editors now share a **Date calendar** selector and month
+picker. It starts with the saved calendar preference, and can switch between
+Gregorian and Jalali without changing either selected date, time or other unsaved
+fields. The form's switch does not change the account-wide preference. Dates can
+also be typed as year/month/day (Persian/Arabic digits are accepted), with a separate
+time field. Choosing a new date defaults its empty time to midnight; changing an
+existing date preserves its time. **Clear date** clears both date and time.
+
+Jalali conversion and month boundaries use the browser's Intl Persian calendar,
+with validation against real calendar dates, including leap-day checks. Invalid
+or incomplete drafts cannot be saved or silently discarded by switching calendars.
+The picker respects the backend's year 1–9999 Gregorian storage range. Internally,
+schedules still use the same Gregorian ISO local date/time strings; reminder timing,
+time zones and existing data are unchanged. The date-entry switch does not alter
+monthly recurrence rules, which continue to advance by Gregorian months.
+
+Verification for the three UI corrections: all 49 frontend checks passed, including
+the two-task category reorder regression, interleaved categories, recurrence-field
+visibility, Jalali leap days and Nowruz, Persian digits, calendar switching, time
+preservation, invalid drafts, month navigation and storage boundaries. A live API
+check with a temporary account confirmed that reordered arrays, custom queues,
+dates, descriptions, estimates and reminder overrides persist correctly; the
+account was removed. Browser checks verified day selection, switching, month
+navigation, layout and recurrence visibility without saving example changes to
+the user's lists. No backend code or database schema changed.
