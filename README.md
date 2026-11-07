@@ -83,10 +83,43 @@ custom titles are preserved when changing the interface language.
 
 Lists are stored as user-scoped `backlogs` records; a private `backlog_meta` record
 marks initialization. No schema migration is needed. Writes are acknowledged by
-the server before the interface updates. Queue items, categories, scheduling,
-dashboard tracking and backlog email reminders are subsequent feature changes.
+the server before the interface updates. Scheduling, dashboard tracking and backlog email reminders are subsequent feature changes.
 
 Backlog verification is included in the existing frontend suite and
 `backend/tests/test_backlogs.py` (isolated SQLite storage using the actual API
 handler functions; FastAPI and SQLAlchemy required). Live PostgreSQL concurrency
 and real authenticated browser sessions require a separate integration check.
+
+### Categories, tasks and queues
+
+Choose **Open list** to manage a list. Create and rename categories, reorder them
+by dragging their headers or using Move up/down, and create tasks with descriptions.
+Deleting a category keeps its tasks under **Uncategorized**. Any task can be
+completed or reopened independently of its queue position.
+
+The **Queue** view defaults to category order, with uncategorized tasks last.
+Drag queue rows or use Move up/down to save a custom sequence that can interleave
+categories arbitrarily. Category changes keep that custom queue intact. **Use
+category order** resets it after confirmation. Completed tasks remain in the queue;
+**Next in queue** identifies the first unfinished task.
+
+Drag tasks onto a category to recategorize them, onto another task to place them
+before it, or onto a list card to move them to that list as uncategorized. Task
+editing also offers **Move to list** and category selectors for keyboard/touch use.
+Cross-list moves save both lists through `POST /api/backlogs/batch` in one database
+transaction. The endpoint validates all documents before saving and only accesses
+the authenticated user's lists; archived contents must be restored before editing.
+Categories, tasks and explicit queue order are nested in each backlog record,
+so existing lists gain empty categories/tasks without a database schema migration.
+List renames and archive/restore preserve their contents. Concurrent full-document
+edits in different browser tabs use last-save-wins semantics.
+
+Change 2 verification: all 26 frontend checks and all six backlog backend checks
+passed. Full backend suite: 24/25 passed; the same pre-existing Auckland agenda-date
+assertion still fails in unchanged scheduler code. Live PostgreSQL/API checks
+passed for default/custom queues, atomic task transfers, persistence after reload,
+completion, validation, archive protection, cross-user isolation, and account
+deletion; temporary verification accounts were removed. The browser list-detail
+view and task form were inspected without adding data to the user's lists. Native
+drag gestures were not exercised in the browser; their operations are covered by
+the frontend checks. The API was rebuilt locally from its cached dependency image.

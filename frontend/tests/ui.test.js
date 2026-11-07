@@ -2,7 +2,7 @@
 const fs = require('fs'), assert = require('assert');
 const html = fs.readFileSync(__dirname + '/../index.html', 'utf8');
 const js = html.match(/<script>([\s\S]*?)<\/script>/g).pop().replace(/<\/?script>/g, '');
-const EXPORTS = 'pBacklog,openBacklog,saveBacklog,archiveBacklog,deleteBacklog,initDemoBacklogs,D,S,boot,R,openF,saveF,parseQ,streakOf,hmCounts,heat,aiCard,aiRun,aiStats,insights,loginView,integCard,quickLog,todayPanel,qaAdd,linkTg,toast,undo,pDash,pTasks,pRoutines,pGoals,pAct,pCal,pSet,tog,del,TODAY,addD,fmt,pick,fillR,setv,testEmail,previewEmail';
+const EXPORTS = 'blQueue,blOpen,blReorderTask,blReorderCategory,blToggle,blResetQueue,blDeleteCategory,blCategoryForm,blSaveCategory,blTaskForm,blSaveTask,blDeleteTask,blMove,pBacklog,openBacklog,saveBacklog,archiveBacklog,deleteBacklog,initDemoBacklogs,D,S,boot,R,openF,saveF,parseQ,streakOf,hmCounts,heat,aiCard,aiRun,aiStats,insights,loginView,integCard,quickLog,todayPanel,qaAdd,linkTg,toast,undo,pDash,pTasks,pRoutines,pGoals,pAct,pCal,pSet,tog,del,TODAY,addD,fmt,pick,fillR,setv,testEmail,previewEmail';
 
 function load({ backend = false, token = '', api = {} } = {}) {
   const els = {}, attrs = {}, timers = [], calls = [], toasts = [];
@@ -178,6 +178,58 @@ t('backlog failed server writes preserve saved state',async()=>{
   await L.tick();await L.tick();assert.strictEqual(L.X.D.backlogs.length,1);
   await L.X.archiveBacklog(item.id);assert.strictEqual(L.X.D.backlogs[0].archived,false);
   await L.X.deleteBacklog(item.id);assert.strictEqual(L.X.D.backlogs.length,1);
+});
+
+t('backlog category order and mixed queue survive renames and category changes',async()=>{
+ const L=load(),X=L.X,id=X.D.backlogs[0].id;
+ Object.assign(X.D.backlogs[0],{categories:[{id:'cat1',title:'A'},{id:'cat2',title:'B'}],tasks:[
+ {id:'task1',title:'A1',category:'cat1'},{id:'task2',title:'B1',category:'cat2'},
+ {id:'task3',title:'B2',category:'cat2'},{id:'task4',title:'A2',category:'cat1'}]});
+ assert.deepStrictEqual(X.blQueue(X.D.backlogs[0]),['task1','task4','task2','task3']);
+ await X.blReorderTask(id,'task4',100,true); // out of range: unchanged
+ await X.blReorderTask(id,'task4',1,true);
+ await X.blReorderTask(id,'task4',1,true);
+ assert.deepStrictEqual(X.D.backlogs[0].queue,['task1','task2','task3','task4']);
+ await X.blReorderCategory(id,'cat2',-1);
+ assert.deepStrictEqual(X.D.backlogs[0].queue,['task1','task2','task3','task4']);
+ X.openBacklog(id);L.el('bl_title').value='Renamed list';await X.saveBacklog(id);
+ assert.strictEqual(X.D.backlogs[0].tasks.length,4);
+ await X.blToggle(id,'task3');assert(X.D.backlogs[0].tasks.find(t=>t.id==='task3').done);
+ await X.blResetQueue(id);assert.deepStrictEqual(X.D.backlogs[0].queue,['task2','task3','task1','task4']);
+ await X.blDeleteCategory(id,'cat2');assert.strictEqual(X.D.backlogs[0].tasks.find(t=>t.id==='task3').category,null);
+ assert.strictEqual(X.D.backlogs[0].tasks.length,4);
+ X.blOpen(id);assert(X.pBacklog().includes('Uncategorized'));
+});
+t('backlog forms create categories and tasks, edit, move, and delete',async()=>{
+ const L=load(),X=L.X,[a,b]=X.D.backlogs.map(x=>x.id);
+ X.blCategoryForm(a);L.el('bl_name').value='Research';await X.blSaveCategory(a,'');
+ const cat=X.D.backlogs[0].categories[0].id;
+ X.blTaskForm(a,'',cat);L.el('bl_name').value='<Read>';L.el('bl_description').value='Notes';L.el('bl_target').value=a;L.el('bl_category').value=cat;
+ await X.blSaveTask(a,'');let task=X.D.backlogs[0].tasks[0];assert.strictEqual(task.description,'Notes');
+ X.blOpen(a);assert(X.pBacklog().includes('&lt;Read&gt;'));
+ X.blTaskForm(a,task.id);L.el('bl_name').value='Read';L.el('bl_description').value='Notes';L.el('bl_target').value=b;L.el('bl_category').value='';
+ await X.blSaveTask(a,task.id);assert.strictEqual(X.D.backlogs[0].tasks.length,0);assert.strictEqual(X.D.backlogs[1].tasks.length,1);
+ await X.blDeleteTask(b,task.id);assert.strictEqual(X.D.backlogs[1].tasks.length,0);
+});
+t('backlog drag operations change queue independently and move between categories/lists',async()=>{
+ const L=load(),X=L.X,[a,b]=X.D.backlogs.map(x=>x.id);
+ Object.assign(X.D.backlogs[0],{categories:[{id:'cat1',title:'A'},{id:'cat2',title:'B'}],tasks:[{id:'task1',title:'A1',category:'cat1'},{id:'task2',title:'B1',category:'cat2'}]});
+ await X.blMove({kind:'task',list:a,id:'task2'},a,'cat1','task1','queue');
+ assert.deepStrictEqual(X.D.backlogs[0].queue,['task2','task1']);assert.strictEqual(X.D.backlogs[0].tasks[1].category,'cat2');
+ await X.blMove({kind:'task',list:a,id:'task2'},a,'cat1',null,'category');
+ assert.strictEqual(X.D.backlogs[0].tasks.find(t=>t.id==='task2').category,'cat1');
+ await X.blMove({kind:'category',list:a,id:'cat2'},a,'cat1',null,'category');
+ assert.strictEqual(X.D.backlogs[0].categories[0].id,'cat2');
+ await X.blMove({kind:'task',list:a,id:'task2'},b,null,null,'queue');
+ assert.strictEqual(X.D.backlogs[0].tasks.length,1);assert.strictEqual(X.D.backlogs[1].tasks[0].category,null);
+ assert.deepStrictEqual(X.D.backlogs[1].queue,['task2']);
+});
+t('backlog atomic move failures leave both lists unchanged',async()=>{
+ const a={id:'list1111',title:'A',tasks:[{id:'task1',title:'Keep',category:null}]},b={id:'list2222',title:'B'};
+ const L=load({backend:true,token:'tok',api:{'/api/backlogs':[a,b],'POST /api/backlogs/batch':()=>({__err:'offline'})}});
+ await L.tick();await L.tick();const before=JSON.stringify(L.X.D.backlogs);
+ await L.X.blMove({kind:'task',list:a.id,id:'task1'},b.id,null,null,'list');
+ assert.strictEqual(JSON.stringify(L.X.D.backlogs),before);
 });
 
 (async () => { let bad = 0; for (const [n, f] of results) { try { await f(); console.log('ok   ' + n) } catch (e) { bad++; console.log('FAIL ' + n + '\n     ' + String(e.stack).split('\n').slice(0, 3).join('\n     ')) } } console.log(bad ? bad + ' failed' : 'all ' + results.length + ' passed'); process.exit(bad ? 1 : 0) })();

@@ -36,6 +36,7 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sess
 
 from .logic import (auth_header, build_agenda, build_ai_messages, is_due, safe_public_https_url, schemes_to_try,
                     strip_think, user_zone, validate_stats, valid_agenda_time)
+from .backlog import normalize_backlog
 from .email_service import MailConfigError, MailDeliveryError, email_configured, send_agenda_email, smtp_config_status
 
 logging.basicConfig(level=logging.INFO)
@@ -154,12 +155,10 @@ def normalize_record_data(kind: str, data: dict) -> dict:
     """Keep focus sessions as first-class activity log entries in JSONB records."""
     clean = {k: v for k, v in data.items() if k != "id"}
     if kind == "backlogs":
-        title = clean.get("title")
-        if not isinstance(title, str) or not title.strip() or len(title.strip()) > 200:
-            raise HTTPException(422, "Backlog title must contain 1 to 200 characters")
-        if not isinstance(clean.get("archived", False), bool):
-            raise HTTPException(422, "Archived must be a boolean")
-        clean = {"title": title.strip(), "archived": clean.get("archived", False)}
+        try:
+            clean = normalize_backlog(clean)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc))
     if kind == "logs" and (clean.get("focus_session") or clean.get("activity_type") == "focus"):
         clean["focus_session"] = True
         clean["activity_type"] = "focus"
@@ -631,6 +630,33 @@ def ai_recommendations(body: AiIn, u: User = Depends(current_user), s: Session =
     if not text:
         raise HTTPException(502, "The model returned an empty answer")
     return {"text": text, "model": rec.config.get("model")}
+
+
+# Save list edits and cross-list moves in one transaction, so a task cannot be lost halfway.
+@app.post("/api/backlogs/batch")
+def save_backlog_batch(body: dict, u: User = Depends(current_user), s: Session = Depends(db)):
+    items = body.get("items")
+    if not isinstance(items, list) or not 1 <= len(items) <= 2:
+        raise HTTPException(422, "Provide one or two backlog lists")
+    normalized = {}
+    for item in items:
+        if not isinstance(item, dict) or not isinstance(item.get("id"), str) or not ID_RE.fullmatch(item["id"]):
+            raise HTTPException(422, "Invalid backlog list id")
+        if item["id"] in normalized:
+            raise HTTPException(422, "Duplicate backlog list id")
+        normalized[item["id"]] = normalize_record_data("backlogs", item)
+    records = []
+    for rid in sorted(normalized):
+        record = s.scalar(select(Record).where(Record.user_id == u.id, Record.kind == "backlogs", Record.id == rid).with_for_update())
+        if record is None:
+            raise HTTPException(404, "Backlog list not found")
+        if record.data.get("archived"):
+            raise HTTPException(409, "Restore the list before editing its contents")
+        records.append(record)
+    for record in records:
+        record.data = normalized[record.id]
+    s.commit()
+    return [{**record.data, "id": record.id} for record in records]
 
 
 # ------------------------------------------------------------------ generic per-user records (keep last: catches /api/{kind})
