@@ -49,7 +49,7 @@ GOOGLE_REDIRECT_URI = os.environ["GOOGLE_REDIRECT_URI"]  # e.g. https://life.exa
 FRONTEND_URL = os.environ["FRONTEND_URL"]
 AI_ALLOWED_HOSTS = [h for h in os.environ.get("AI_ALLOWED_HOSTS", "").split(",") if h.strip()]
 vault = Fernet(os.environ["SECRETS_KEY"])  # python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
-KINDS = {"tasks", "routines", "goals", "logs", "cats"}
+KINDS = {"tasks", "routines", "goals", "logs", "cats", "backlogs"}
 INTEGRATIONS = {"telegram", "llm"}
 
 engine = create_engine(DATABASE_URL, pool_pre_ping=True)
@@ -153,6 +153,13 @@ def tg_call(token, method, **params):
 def normalize_record_data(kind: str, data: dict) -> dict:
     """Keep focus sessions as first-class activity log entries in JSONB records."""
     clean = {k: v for k, v in data.items() if k != "id"}
+    if kind == "backlogs":
+        title = clean.get("title")
+        if not isinstance(title, str) or not title.strip() or len(title.strip()) > 200:
+            raise HTTPException(422, "Backlog title must contain 1 to 200 characters")
+        if not isinstance(clean.get("archived", False), bool):
+            raise HTTPException(422, "Archived must be a boolean")
+        clean = {"title": title.strip(), "archived": clean.get("archived", False)}
     if kind == "logs" and (clean.get("focus_session") or clean.get("activity_type") == "focus"):
         clean["focus_session"] = True
         clean["activity_type"] = "focus"
@@ -629,7 +636,25 @@ def ai_recommendations(body: AiIn, u: User = Depends(current_user), s: Session =
 # ------------------------------------------------------------------ generic per-user records (keep last: catches /api/{kind})
 @app.get("/api/{kind}")
 def list_records(kind: str, u: User = Depends(current_user), s: Session = Depends(db)):
-    rows = s.scalars(select(Record).where(Record.user_id == u.id, Record.kind == kind_or_404(kind)))
+    kind_or_404(kind)
+    if kind == "backlogs":
+        # Serialize first-time initialization across tabs; remember even after all lists are deleted.
+        owner = s.scalar(select(User).where(User.id == u.id).with_for_update())
+        if not s.scalar(select(Record).where(Record.user_id == u.id, Record.kind == "backlog_meta")):
+            existing = s.scalar(select(Record).where(Record.user_id == u.id, Record.kind == kind).limit(1))
+            if not existing:
+                titles = (["پروژه با اولویت اول", "پروژه با اولویت دوم", "پروژه با اولویت آخر", "کارهای وقت آزاد"]
+                          if (owner.prefs or {}).get("lang") == "fa" else
+                          ["First-priority project", "Second-priority project", "Last-priority project", "Free-time work"])
+                for i, title in enumerate(titles):
+                    s.add(Record(id="backlog-default-" + str(i + 1), user_id=u.id, kind=kind,
+                                 data={"title": title, "archived": False}))
+            s.add(Record(id="backlog-initialized", user_id=u.id, kind="backlog_meta", data={}))
+            s.commit()
+    query = select(Record).where(Record.user_id == u.id, Record.kind == kind)
+    if kind == "backlogs":
+        query = query.order_by(Record.id)
+    rows = s.scalars(query)
     return [{**normalize_record_data(kind, r.data), "id": r.id} for r in rows]
 
 

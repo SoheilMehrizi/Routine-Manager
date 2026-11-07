@@ -71,3 +71,22 @@ reminders before activities, data export, rate limiting beyond simple cooldowns,
 startup; add Alembic before production), JSON "records" table (move to explicit columns).
 The session token is kept in the browser's localStorage; serve the site over HTTPS only.
 Agenda text shows dates in Gregorian form.
+
+## Backlog lists
+
+Open **Backlog** in the sidebar. Each user starts with four editable lists (first,
+second and last priority projects, and free-time work). Add more lists with **New
+list**, rename them, or archive and restore them using the Active/Archived views.
+Deleting a list asks for confirmation and is permanent. Deleting every list does
+not recreate the defaults. Default titles use the user's language at initialization;
+custom titles are preserved when changing the interface language.
+
+Lists are stored as user-scoped `backlogs` records; a private `backlog_meta` record
+marks initialization. No schema migration is needed. Writes are acknowledged by
+the server before the interface updates. Queue items, categories, scheduling,
+dashboard tracking and backlog email reminders are subsequent feature changes.
+
+Backlog verification is included in the existing frontend suite and
+`backend/tests/test_backlogs.py` (isolated SQLite storage using the actual API
+handler functions; FastAPI and SQLAlchemy required). Live PostgreSQL concurrency
+and real authenticated browser sessions require a separate integration check.

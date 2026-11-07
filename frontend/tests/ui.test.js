@@ -2,7 +2,7 @@
 const fs = require('fs'), assert = require('assert');
 const html = fs.readFileSync(__dirname + '/../index.html', 'utf8');
 const js = html.match(/<script>([\s\S]*?)<\/script>/g).pop().replace(/<\/?script>/g, '');
-const EXPORTS = 'D,S,boot,R,openF,saveF,parseQ,streakOf,hmCounts,heat,aiCard,aiRun,aiStats,insights,loginView,integCard,quickLog,todayPanel,qaAdd,linkTg,toast,undo,pDash,pTasks,pRoutines,pGoals,pAct,pCal,pSet,tog,del,TODAY,addD,fmt,pick,fillR,setv,testEmail,previewEmail';
+const EXPORTS = 'pBacklog,openBacklog,saveBacklog,archiveBacklog,deleteBacklog,initDemoBacklogs,D,S,boot,R,openF,saveF,parseQ,streakOf,hmCounts,heat,aiCard,aiRun,aiStats,insights,loginView,integCard,quickLog,todayPanel,qaAdd,linkTg,toast,undo,pDash,pTasks,pRoutines,pGoals,pAct,pCal,pSet,tog,del,TODAY,addD,fmt,pick,fillR,setv,testEmail,previewEmail';
 
 function load({ backend = false, token = '', api = {} } = {}) {
   const els = {}, attrs = {}, timers = [], calls = [], toasts = [];
@@ -156,6 +156,28 @@ t('Email agenda: configured Settings shows an email test action and sends the sa
 t('Telegram: Link button only while not linked; agenda row inactive until linked', async () => {
   const L = load({ backend: true, token: 'tok', api: { '/api/integrations': [{ name: 'telegram', config: { bot: 'mybot', linked: false }, has_secret: true }] } });
   L.X.boot(); await L.tick(); await L.tick(); const h = L.X.integCard(); assert(/Link chat/.test(h) && /Link Telegram to enable/.test(h) && /Inactive/.test(h));
+});
+
+
+t('backlog defaults initialize once, rename safely, archive, restore and delete', async () => {
+  const {X,el}=load(); assert.strictEqual(X.D.backlogs.length,4);
+  const id=X.D.backlogs[0].id;
+  X.openBacklog(id); el('bl_title').value=' <b>My project</b> ';
+  await X.saveBacklog(id); assert.strictEqual(X.D.backlogs[0].title,'<b>My project</b>');
+  assert(X.pBacklog().includes('&lt;b&gt;My project&lt;/b&gt;'));
+  await X.archiveBacklog(id); assert(X.D.backlogs[0].archived); assert(!X.pBacklog().includes('&lt;b&gt;My project&lt;/b&gt;'));
+  await X.archiveBacklog(id); assert(!X.D.backlogs[0].archived);
+  for(const item of [...X.D.backlogs]) await X.deleteBacklog(item.id);
+  X.initDemoBacklogs(); assert.strictEqual(X.D.backlogs.length,0);
+  X.openBacklog();el('bl_title').value=' ';await X.saveBacklog('');assert.strictEqual(X.D.backlogs.length,0);
+  el('bl_title').value='New project';await X.saveBacklog('');assert.strictEqual(X.D.backlogs.length,1);
+});
+t('backlog failed server writes preserve saved state',async()=>{
+  const item={id:'list1234',title:'Original',archived:false};
+  const L=load({backend:true,token:'tok',api:{'/api/backlogs':[item],'PUT /api/backlogs/list1234':()=>({__err:'offline'}),'DELETE /api/backlogs/list1234':()=>({__err:'offline'})}});
+  await L.tick();await L.tick();assert.strictEqual(L.X.D.backlogs.length,1);
+  await L.X.archiveBacklog(item.id);assert.strictEqual(L.X.D.backlogs[0].archived,false);
+  await L.X.deleteBacklog(item.id);assert.strictEqual(L.X.D.backlogs.length,1);
 });
 
 (async () => { let bad = 0; for (const [n, f] of results) { try { await f(); console.log('ok   ' + n) } catch (e) { bad++; console.log('FAIL ' + n + '\n     ' + String(e.stack).split('\n').slice(0, 3).join('\n     ')) } } console.log(bad ? bad + ' failed' : 'all ' + results.length + ' passed'); process.exit(bad ? 1 : 0) })();
