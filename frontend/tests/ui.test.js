@@ -2,7 +2,7 @@
 const fs = require('fs'), assert = require('assert');
 const html = fs.readFileSync(__dirname + '/../index.html', 'utf8');
 const js = html.match(/<script>([\s\S]*?)<\/script>/g).pop().replace(/<\/?script>/g, '');
-const EXPORTS = 'blQueue,blOpen,blReorderTask,blReorderCategory,blToggle,blResetQueue,blDeleteCategory,blCategoryForm,blSaveCategory,blTaskForm,blSaveTask,blDeleteTask,blMove,pBacklog,openBacklog,saveBacklog,archiveBacklog,deleteBacklog,initDemoBacklogs,D,S,boot,R,openF,saveF,parseQ,streakOf,hmCounts,heat,aiCard,aiRun,aiStats,insights,loginView,integCard,quickLog,todayPanel,qaAdd,linkTg,toast,undo,pDash,pTasks,pRoutines,pGoals,pAct,pCal,pSet,tog,del,TODAY,addD,fmt,pick,fillR,setv,testEmail,previewEmail';
+const EXPORTS = 'blSchedulePreview,blConflicts,blSubAdd,blToggleSubtask,blCompleteLocal,blQueue,blOpen,blReorderTask,blReorderCategory,blToggle,blResetQueue,blDeleteCategory,blCategoryForm,blSaveCategory,blTaskForm,blSaveTask,blDeleteTask,blMove,pBacklog,openBacklog,saveBacklog,archiveBacklog,deleteBacklog,initDemoBacklogs,D,S,boot,R,openF,saveF,parseQ,streakOf,hmCounts,heat,aiCard,aiRun,aiStats,insights,loginView,integCard,quickLog,todayPanel,qaAdd,linkTg,toast,undo,pDash,pTasks,pRoutines,pGoals,pAct,pCal,pSet,tog,del,TODAY,addD,fmt,pick,fillR,setv,testEmail,previewEmail';
 
 function load({ backend = false, token = '', api = {} } = {}) {
   const els = {}, attrs = {}, timers = [], calls = [], toasts = [];
@@ -230,6 +230,40 @@ t('backlog atomic move failures leave both lists unchanged',async()=>{
  await L.tick();await L.tick();const before=JSON.stringify(L.X.D.backlogs);
  await L.X.blMove({kind:'task',list:a.id,id:'task1'},b.id,null,null,'list');
  assert.strictEqual(JSON.stringify(L.X.D.backlogs),before);
+});
+
+t('backlog scheduling allows conflicting dates and displays warning tags',async()=>{
+ const L=load(),X=L.X,id=X.D.backlogs[0].id;
+ X.openBacklog(id);L.el('bl_title').value='Scheduled';L.el('bl_start').value='2026-11-07T09:00';L.el('bl_deadline').value='2026-11-07T18:00';await X.saveBacklog(id);
+ X.blCategoryForm(id);L.el('bl_name').value='Research';L.el('bl_start').value='2026-11-07T08:00';L.el('bl_deadline').value='2026-11-07T19:00';X.blSchedulePreview();assert(L.el('bl_date_warning').innerHTML.includes('Saving is allowed'));
+ await X.blSaveCategory(id,'');let cat=X.D.backlogs[0].categories[0];assert(cat.date_conflicts.includes('outside_list'));
+ X.blTaskForm(id,'',cat.id);L.el('bl_name').value='Read';L.el('bl_description').value='';L.el('bl_target').value=id;L.el('bl_category').value=cat.id;L.el('bl_start').value='2026-11-08T10:00';L.el('bl_deadline').value='2026-11-07T07:00';
+ X.blSchedulePreview();assert(L.el('bl_date_warning').innerHTML.includes('Start is after deadline'));await X.blSaveTask(id,'');let task=X.D.backlogs[0].tasks[0];assert.deepStrictEqual(task.date_conflicts,['reversed_dates','outside_list','outside_category']);
+ X.blOpen(id);assert(X.pBacklog().includes('Outside category dates'));assert(X.pBacklog().includes('Outside list dates'));
+});
+t('backlog task forms save estimates, recurrence and independent subtasks',async()=>{
+ const L=load(),X=L.X,id=X.D.backlogs[0].id;
+ X.blTaskForm(id);L.el('bl_name').value='Study';L.el('bl_description').value='';L.el('bl_target').value=id;L.el('bl_category').value='';L.el('bl_estimate').value='45';L.el('bl_repeat').value='week';L.el('bl_every').value='2';
+ L.el('bl_sub_new').value='<Read>';X.blSubAdd();await X.blSaveTask(id,'');let task=X.D.backlogs[0].tasks[0];assert.strictEqual(task.estimate,45);assert.deepStrictEqual(task.recurrence,{unit:'week',every:2});assert.strictEqual(task.subtasks[0].title,'<Read>');
+ await X.blToggleSubtask(id,task.id,task.subtasks[0].id,true);task=X.D.backlogs[0].tasks[0];assert(task.subtasks[0].done);assert(!task.done);
+ X.blOpen(id);assert(X.pBacklog().includes('&lt;Read&gt;'));
+});
+t('backlog recurrence clamps months, preserves anchors, skips missed dates and avoids duplicates',()=>{
+ const {X}=load();let doc={id:'list1',title:'Repeat',categories:[],tasks:[{id:'task1',title:'Monthly',deadline:'2027-01-31T10:00',recurrence:{unit:'month',every:1},subtasks:[{id:'sub1',title:'Read',done:true}]}]};
+ doc=X.blCompleteLocal(doc,'task1',true,'2027-01-31T11:00');let child=doc.tasks[1];assert.strictEqual(child.deadline,'2027-02-28T10:00');assert(!child.subtasks[0].done);
+ doc=X.blCompleteLocal(doc,'task1',true,'2027-01-31T11:00');doc=X.blCompleteLocal(doc,'task1',false,'2027-01-31T11:00');doc=X.blCompleteLocal(doc,'task1',true,'2027-01-31T11:00');assert.strictEqual(doc.tasks.length,2);
+ doc=X.blCompleteLocal(doc,child.id,true,'2027-02-28T11:00');assert.strictEqual(doc.tasks[2].deadline,'2027-03-31T10:00');
+ let late={id:'list2',title:'Late',tasks:[{id:'task2',title:'Late',deadline:'2020-01-01T10:00',recurrence:{unit:'day',every:1}}]};late=X.blCompleteLocal(late,'task2',true,'2026-11-07T11:00');assert.strictEqual(late.tasks[1].deadline,'2026-11-08T10:00');
+});
+t('backlog schedule validation leaves saved tasks intact',async()=>{
+ const L=load(),X=L.X,id=X.D.backlogs[0].id;
+ X.blTaskForm(id);L.el('bl_name').value='Invalid';L.el('bl_target').value=id;L.el('bl_description').value='';L.el('bl_category').value='';L.el('bl_start').value='2026-02-30T10:00';
+ await X.blSaveTask(id,'');assert.strictEqual((X.D.backlogs[0].tasks||[]).length,0);assert(L.el('bl_error').textContent.includes('valid schedule'));
+ L.el('bl_start').value='';L.el('bl_estimate').value='1.5';await X.blSaveTask(id,'');assert.strictEqual((X.D.backlogs[0].tasks||[]).length,0);
+});
+t('backlog server completion failure preserves task and recurrence state',async()=>{
+ const item={id:'list1111',title:'A',tasks:[{id:'task1',title:'Keep',done:false,recurrence:{unit:'day',every:1}}]};
+ const L=load({backend:true,token:'tok',api:{'/api/backlogs':[item],'POST /api/backlogs/list1111/tasks/task1/completion':()=>({__err:'offline'})}});await L.tick();await L.tick();const before=JSON.stringify(L.X.D.backlogs);await L.X.blToggle(item.id,'task1');assert.strictEqual(JSON.stringify(L.X.D.backlogs),before);
 });
 
 (async () => { let bad = 0; for (const [n, f] of results) { try { await f(); console.log('ok   ' + n) } catch (e) { bad++; console.log('FAIL ' + n + '\n     ' + String(e.stack).split('\n').slice(0, 3).join('\n     ')) } } console.log(bad ? bad + ' failed' : 'all ' + results.length + ' passed'); process.exit(bad ? 1 : 0) })();

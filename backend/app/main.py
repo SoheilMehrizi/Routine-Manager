@@ -36,7 +36,7 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sess
 
 from .logic import (auth_header, build_agenda, build_ai_messages, is_due, safe_public_https_url, schemes_to_try,
                     strip_think, user_zone, validate_stats, valid_agenda_time)
-from .backlog import normalize_backlog
+from .backlog import normalize_backlog, complete_backlog
 from .email_service import MailConfigError, MailDeliveryError, email_configured, send_agenda_email, smtp_config_status
 
 logging.basicConfig(level=logging.INFO)
@@ -630,6 +630,25 @@ def ai_recommendations(body: AiIn, u: User = Depends(current_user), s: Session =
     if not text:
         raise HTTPException(502, "The model returned an empty answer")
     return {"text": text, "model": rec.config.get("model")}
+
+
+@app.post("/api/backlogs/{rid}/tasks/{tid}/completion")
+def complete_backlog_task(rid: str, tid: str, body: dict, u: User = Depends(current_user), s: Session = Depends(db)):
+    record = s.scalar(select(Record).where(Record.user_id == u.id, Record.kind == "backlogs", Record.id == rid).with_for_update())
+    if record is None:
+        raise HTTPException(404, "Backlog list not found")
+    if record.data.get("archived"):
+        raise HTTPException(409, "Restore the list before editing its contents")
+    try:
+        local_now = now_utc().astimezone(user_zone((u.prefs or {}).get("tz"))).replace(tzinfo=None)
+        clean = complete_backlog(record.data, tid, body.get("done"), local_now)
+    except LookupError as exc:
+        raise HTTPException(404, str(exc))
+    except (ValueError, OverflowError) as exc:
+        raise HTTPException(422, str(exc))
+    record.data = clean
+    s.commit()
+    return {**clean, "id": record.id}
 
 
 # Save list edits and cross-list moves in one transaction, so a task cannot be lost halfway.

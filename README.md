@@ -83,7 +83,7 @@ custom titles are preserved when changing the interface language.
 
 Lists are stored as user-scoped `backlogs` records; a private `backlog_meta` record
 marks initialization. No schema migration is needed. Writes are acknowledged by
-the server before the interface updates. Scheduling, dashboard tracking and backlog email reminders are subsequent feature changes.
+the server before the interface updates. Dashboard tracking and backlog email reminders are subsequent feature changes.
 
 Backlog verification is included in the existing frontend suite and
 `backend/tests/test_backlogs.py` (isolated SQLite storage using the actual API
@@ -123,3 +123,43 @@ deletion; temporary verification accounts were removed. The browser list-detail
 view and task form were inspected without adding data to the user's lists. Native
 drag gestures were not exercised in the browser; their operations are covered by
 the frontend checks. The API was rebuilt locally from its cached dependency image.
+### Scheduling, subtasks, estimates and recurrence
+
+Use **Edit list**, **Edit category**, or the task editor to set optional start times
+and deadlines. Values are local wall times in the account's saved time zone; date
+summaries use the selected display calendar. Date/time inputs use the browser's
+native calendar. A start after its deadline, or dates outside the enclosing list
+or category, is allowed with a live warning and visible conflict tags. Tags are
+recomputed after edits and moves; clients cannot suppress them by sending tags.
+Missing dates do not impose or inherit additional bounds.
+
+Tasks support optional whole-minute estimates and up to 200 editable subtasks.
+Subtask completion is independent of parent completion. Estimates must be positive
+whole numbers. A recurring successor copies the description, category, estimate,
+and subtask titles, and resets its subtask completion state.
+
+Recurrence supports every 1–365 days, weeks or months. Completing a task creates
+one successor, advancing its deadline (or start when no deadline exists) to the
+next occurrence after completion. Missed occurrences are skipped. Early completion
+still advances by at least one interval. When both dates exist, both advance by
+the same number of intervals. Monthly repeats clamp to the target month's end
+and preserve each date's original day, so January 31 → February 28 → March 31.
+When neither date exists, the successor gets a start time one interval after
+completion in the user's saved time zone.
+
+The completion endpoint, `POST /api/backlogs/{list}/tasks/{task}/completion`, accepts
+`{"done": true}` or `{"done": false}`. It locks the user's list and creates the next
+occurrence in the same transaction. Repeated/concurrent completion requests and
+reopening/recompleting an occurrence do not create additional successors. Deleting
+a successor does not make its original occurrence generate another one. Custom
+queues append the successor; default queues place it last in its category.
+
+Change 3 verification: all 31 frontend checks and all 13 backlog backend checks
+passed. Full backend suite: 31/32 passed; the previously recorded Auckland agenda
+date assertion still fails in unchanged code. Live PostgreSQL/API checks passed
+for date/tag persistence, estimates, subtasks, monthly anchors, concurrent
+completion idempotence, time-zone-based recurrence, archive protection,
+authentication, user isolation, and account deletion. Temporary test accounts were
+removed. Browser checks covered the list/category/task forms, an unsaved conflict
+preview, subtask controls and form overflow; no example tasks were saved to the
+user's lists. The local API was rebuilt from the cached dependency image.

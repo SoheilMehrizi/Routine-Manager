@@ -6,7 +6,8 @@ import unittest
 try:
     import sys
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-    from app.backlog import normalize_backlog
+    from app.backlog import normalize_backlog, complete_backlog
+    import datetime as dt
     from fastapi import HTTPException
     from sqlalchemy import JSON, String, create_engine, select
     from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
@@ -33,13 +34,14 @@ class Record(Base):
 
 
 source = ast.parse((Path(__file__).resolve().parents[1] / "app/main.py").read_text(encoding="utf-8"))
-names = {"normalize_record_data", "list_records", "upsert_record", "delete_record", "kind_or_404", "save_backlog_batch"}
+names = {"normalize_record_data", "list_records", "upsert_record", "delete_record", "kind_or_404", "save_backlog_batch", "complete_backlog_task"}
 nodes = [n for n in source.body if isinstance(n, ast.FunctionDef) and n.name in names]
 for node in nodes:
     node.decorator_list = []
     node.args.defaults = []
 scope = dict(User=User, Record=Record, Session=Session, select=select, HTTPException=HTTPException,
-             normalize_backlog=normalize_backlog, KINDS={"backlogs"}, ID_RE=re.compile(r"^[A-Za-z0-9_-]{4,40}$"))
+             normalize_backlog=normalize_backlog, complete_backlog=complete_backlog,
+             now_utc=lambda:dt.datetime.now(dt.timezone.utc), user_zone=lambda tz:dt.timezone.utc, KINDS={"backlogs"}, ID_RE=re.compile(r"^[A-Za-z0-9_-]{4,40}$"))
 exec(compile(ast.Module(body=nodes, type_ignores=[]), "main.py handlers", "exec"), scope)
 
 
@@ -86,7 +88,7 @@ class BacklogStorage(unittest.TestCase):
             with self.assertRaises(HTTPException):
                 normalize("backlogs", data)
         self.assertEqual(normalize("backlogs", {"title": " OK ", "id": "fake", "user_id": 2}),
-                         {"title": "OK", "archived": False, "categories": [], "tasks": [], "queue": [], "custom_order": False})
+                         {"title": "OK", "archived": False, "categories": [], "tasks": [], "queue": [], "custom_order": False, "start": "", "deadline": "", "date_conflicts": []})
 
 
     def test_nested_data_default_and_mixed_queue(self):
@@ -127,3 +129,22 @@ class BacklogStorage(unittest.TestCase):
         self.assertEqual(saved[0]["tasks"], [])
         self.assertEqual(saved[1]["queue"], ["task1"])
         self.assertEqual(saved[1]["tasks"][0]["description"], "Keep me")
+
+
+    def test_completion_handler_idempotence_and_isolation(self):
+        item = self.lists(self.a)[0]
+        self.lists(self.b)
+        item["tasks"] = [{"id": "task1", "title": "Recurring", "recurrence": {"unit": "day", "every": 1}}]
+        scope["save_backlog_batch"]({"items": [item]}, self.a, self.s)
+        handler = scope["complete_backlog_task"]
+        result = handler(item["id"], "task1", {"done": True}, self.a, self.s)
+        self.assertEqual(len(result["tasks"]), 2)
+        for done in [True, False, True]:
+            result = handler(item["id"], "task1", {"done": done}, self.a, self.s)
+            self.assertEqual(len(result["tasks"]), 2)
+        with self.assertRaises(HTTPException) as error:
+            handler(item["id"], "task1", {"done": True}, self.b, self.s)
+        self.assertEqual(error.exception.status_code, 404)
+        with self.assertRaises(HTTPException) as error:
+            handler(item["id"], "task1", {"done": "yes"}, self.a, self.s)
+        self.assertEqual(error.exception.status_code, 422)
