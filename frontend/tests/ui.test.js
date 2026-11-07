@@ -313,4 +313,16 @@ t('backlog delivery history escapes titles and shows uncertain deliveries',async
  const L=load({backend:true,token:'tok',api:{'/api/backlog-reminders/status':{email:'verified@example.test',email_configured:true,deliveries:[{title:'<script>bad</script>',scope:'Task',event:'deadline',status:'unknown',scheduled_at:'2026-11-07T09:00:00+00:00',error:'Not resent'}]}}});await L.tick();await L.tick();L.X.blReminderSettingsCard();await L.tick();const h=L.X.blReminderStatusHtml();assert(h.includes('verified@example.test')&&h.includes('Delivery uncertain')&&h.includes('&lt;script&gt;'));assert(!h.includes('<script>bad'));
 });
 
+
+t('category Move up/down preserves every task, metadata and unrelated categories',async()=>{
+ const {X}=load(),id=X.D.backlogs[0].id;
+ const original=[{id:'task1',title:'First',category:'cat1',description:'Keep',estimate:30,reminders:{mode:'off'}},{id:'task2',title:'Second',category:'cat1',start:'2026-11-07T10:00'}];
+ Object.assign(X.D.backlogs[0],{categories:[{id:'cat1',title:'A'},{id:'cat2',title:'B'}],tasks:JSON.parse(JSON.stringify(original))});
+ await X.blReorderTask(id,'task2',-1,false);assert.deepStrictEqual(X.D.backlogs[0].tasks.map(t=>t.id),['task2','task1']);assert.strictEqual(X.D.backlogs[0].tasks[1].description,'Keep');assert.strictEqual(X.D.backlogs[0].tasks[0].start,'2026-11-07T10:00');
+ await X.blReorderTask(id,'task2',1,false);assert.deepStrictEqual(X.D.backlogs[0].tasks.map(t=>t.id),['task1','task2']);
+ X.D.backlogs[0].tasks=[original[0],{id:'task3',title:'Other category',category:'cat2'},original[1],{id:'task4',title:'Third',category:'cat1'}];
+ await X.blReorderTask(id,'task4',-1,false);assert.deepStrictEqual(X.D.backlogs[0].tasks.map(t=>t.id),['task1','task3','task4','task2']);assert.deepStrictEqual(X.blQueue(X.D.backlogs[0]),['task1','task4','task2','task3']);
+ X.D.backlogs[0].custom_order=true;X.D.backlogs[0].queue=['task3','task2','task1','task4'];await X.blReorderTask(id,'task4',-1,false);assert.deepStrictEqual(X.D.backlogs[0].queue,['task3','task2','task1','task4']);
+});
+
 (async () => { let bad = 0; for (const [n, f] of results) { try { await f(); console.log('ok   ' + n) } catch (e) { bad++; console.log('FAIL ' + n + '\n     ' + String(e.stack).split('\n').slice(0, 3).join('\n     ')) } } console.log(bad ? bad + ' failed' : 'all ' + results.length + ' passed'); process.exit(bad ? 1 : 0) })();

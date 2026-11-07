@@ -261,3 +261,8 @@ To repeat the opt-in integration checks from PowerShell in the project root:
 These checks create and remove temporary accounts in the configured database;
 all mail is intercepted by a fake sender and their dates cannot trigger the live
 scheduler. The API was rebuilt locally using its cached dependency image.
+
+Backlog ordering correction: category Move up/down now selects each task by a fixed
+id before mapping the reordered category back into the full list. It preserves
+all task metadata and other categories; an existing custom queue remains independent.
+The regression check covers the reported two-task case and interleaved categories.
