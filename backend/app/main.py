@@ -36,7 +36,7 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sess
 
 from .logic import (auth_header, build_agenda, build_ai_messages, is_due, safe_public_https_url, schemes_to_try,
                     strip_think, user_zone, validate_stats, valid_agenda_time)
-from .backlog import normalize_backlog, complete_backlog
+from .backlog import normalize_backlog, complete_backlog, default_backlog_priority
 from .backlog_reminders import normalize_policy, reminder_events, reminder_content
 from .email_service import MailConfigError, MailDeliveryError, email_configured, send_agenda_email, smtp_config_status, send_backlog_reminder_email, MailDeliveryUncertain
 
@@ -170,12 +170,12 @@ def tg_call(token, method, **params):
     return data["result"], ""
 
 
-def normalize_record_data(kind: str, data: dict) -> dict:
+def normalize_record_data(kind: str, data: dict, record_id=None) -> dict:
     """Keep focus sessions as first-class activity log entries in JSONB records."""
     clean = {k: v for k, v in data.items() if k != "id"}
     if kind == "backlogs":
         try:
-            clean = normalize_backlog(clean)
+            clean = normalize_backlog({**clean, "priority": clean.get("priority", default_backlog_priority(record_id))})
         except ValueError as exc:
             raise HTTPException(422, str(exc))
     if kind == "logs" and (clean.get("focus_session") or clean.get("activity_type") == "focus"):
@@ -748,7 +748,7 @@ def complete_backlog_task(rid: str, tid: str, body: dict, u: User = Depends(curr
         raise HTTPException(409, "Restore the list before editing its contents")
     try:
         local_now = now_utc().astimezone(user_zone((u.prefs or {}).get("tz"))).replace(tzinfo=None)
-        clean = complete_backlog(record.data, tid, body.get("done"), local_now)
+        clean = complete_backlog({**record.data, "priority": record.data.get("priority", default_backlog_priority(rid))}, tid, body.get("done"), local_now)
     except LookupError as exc:
         raise HTTPException(404, str(exc))
     except (ValueError, OverflowError) as exc:
@@ -770,7 +770,7 @@ def save_backlog_batch(body: dict, u: User = Depends(current_user), s: Session =
             raise HTTPException(422, "Invalid backlog list id")
         if item["id"] in normalized:
             raise HTTPException(422, "Duplicate backlog list id")
-        normalized[item["id"]] = normalize_record_data("backlogs", item)
+        normalized[item["id"]] = normalize_record_data("backlogs", item, item["id"])
     records = []
     for rid in sorted(normalized):
         record = s.scalar(select(Record).where(Record.user_id == u.id, Record.kind == "backlogs", Record.id == rid).with_for_update())
@@ -780,6 +780,9 @@ def save_backlog_batch(body: dict, u: User = Depends(current_user), s: Session =
             raise HTTPException(409, "Restore the list before editing its contents")
         records.append(record)
     for record in records:
+        original = next(item for item in items if item["id"] == record.id)
+        if "priority" not in original:
+            normalized[record.id]["priority"] = record.data.get("priority", default_backlog_priority(record.id))
         record.data = normalized[record.id]
     s.commit()
     return [{**record.data, "id": record.id} for record in records]
@@ -800,21 +803,21 @@ def list_records(kind: str, u: User = Depends(current_user), s: Session = Depend
                           ["First-priority project", "Second-priority project", "Last-priority project", "Free-time work"])
                 for i, title in enumerate(titles):
                     s.add(Record(id="backlog-default-" + str(i + 1), user_id=u.id, kind=kind,
-                                 data={"title": title, "archived": False}))
+                                 data={"title": title, "archived": False, "priority": default_backlog_priority("backlog-default-" + str(i + 1))}))
             s.add(Record(id="backlog-initialized", user_id=u.id, kind="backlog_meta", data={}))
             s.commit()
     query = select(Record).where(Record.user_id == u.id, Record.kind == kind)
     if kind == "backlogs":
         query = query.order_by(Record.id)
     rows = s.scalars(query)
-    return [{**normalize_record_data(kind, r.data), "id": r.id} for r in rows]
+    return [{**normalize_record_data(kind, r.data, r.id), "id": r.id} for r in rows]
 
 
 @app.post("/api/{kind}", status_code=201)
 def create_record(kind: str, data: dict, u: User = Depends(current_user), s: Session = Depends(db)):
     rid = str(uuid.uuid4())
     record_kind = kind_or_404(kind)
-    clean = normalize_record_data(record_kind, data)
+    clean = normalize_record_data(record_kind, data, rid)
     s.add(Record(id=rid, user_id=u.id, kind=record_kind, data=clean))
     s.commit()
     return {**clean, "id": rid}
@@ -829,10 +832,12 @@ def upsert_record(kind: str, rid: str, data: dict, u: User = Depends(current_use
     kind_or_404(kind)
     if not ID_RE.match(rid):
         raise HTTPException(422, "Invalid id")
-    clean = normalize_record_data(kind, data)
     rec = s.get(Record, (rid, u.id))
     if rec and rec.kind != kind:
         raise HTTPException(409, "Id already used by another collection")
+    if kind == "backlogs" and "priority" not in data:
+        data = {**data, "priority": (rec.data if rec else {}).get("priority", default_backlog_priority(rid))}
+    clean = normalize_record_data(kind, data, rid)
     if rec:
         rec.data = clean
     else:

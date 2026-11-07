@@ -7,6 +7,11 @@ import uuid
 from .backlog_reminders import normalize_policy
 
 
+def default_backlog_priority(record_id):
+    return {"backlog-default-1": "first", "backlog-default-2": "second",
+            "backlog-default-3": "later", "backlog-default-4": "free"}.get(record_id, "later")
+
+
 def normalize_backlog(data):
     def title(value, label):
         if not isinstance(value, str) or not value.strip() or len(value.strip()) > 200:
@@ -18,6 +23,9 @@ def normalize_backlog(data):
             raise ValueError("Invalid backlog item id")
         return value
 
+    priority = data.get("priority", "later")
+    if not isinstance(priority, str) or priority not in ("first", "second", "later", "free"):
+        raise ValueError("List priority must be first, second, later or free")
     archived = data.get("archived", False)
     custom = data.get("custom_order", False)
     if not isinstance(archived, bool) or not isinstance(custom, bool):
@@ -60,7 +68,7 @@ def normalize_backlog(data):
     else:
         queue = [task["id"] for cid in [c["id"] for c in clean_cats] + [None]
                  for task in clean_tasks if task["category"] == cid]
-    return tag_conflicts({"title": title(data.get("title"), "Backlog title"), "archived": archived,
+    return tag_conflicts({"title": title(data.get("title"), "Backlog title"), "archived": archived, "priority": priority,
             "categories": clean_cats, "tasks": clean_tasks, "queue": queue, "custom_order": custom, **schedule_fields(data)})
 
 

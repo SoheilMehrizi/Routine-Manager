@@ -298,3 +298,41 @@ dates, descriptions, estimates and reminder overrides persist correctly; the
 account was removed. Browser checks verified day selection, switching, month
 navigation, layout and recurrence visibility without saving example changes to
 the user's lists. No backend code or database schema changed.
+### Field Notes backlog design and list priorities
+
+Backlog uses the approved Field Notes direction: warm paper surfaces, editorial
+headings, numbered priorities, a stronger first-priority treatment, quieter green
+and neutral project treatments, and a separate gold free-time treatment. List
+cards show actual completion progress and the next unfinished task in the saved
+queue. **Open list** reveals the selected list's details; **Back to lists** returns
+to the overview. Edit/archive/restore/delete remain available in each list's ⋯
+action menu. Motion respects the reduced-motion preference; narrow-layout and RTL
+styles are included.
+
+Use **⋯ > Edit list > List priority** to choose First, Second, Later or Free time.
+The stored API values are `first`, `second`, `later` and `free`. Several lists may
+share a priority; editing one does not silently reclassify another. Lists sort by
+priority, retaining their existing order within a priority. Priority affects list
+presentation and breaks dashboard queue/next-event ties; the nearest upcoming
+scheduled event still takes precedence over list priority. Task/category ordering
+and custom queues remain independent.
+
+The four existing default list IDs map to First, Second, Later and Free time even
+if renamed. Legacy custom lists default to Later. Missing priority is inferred
+when reading old records, with no schema migration or bulk rewrite. New default
+lists store their priority explicitly. Custom lists initially use Later. Saves
+that omit priority (including older open clients) retain the current stored
+priority; category/task batch saves, completion and archive/restore preserve it.
+The field is validated server-side and scoped to the authenticated user's record.
+
+Verification: all 55 frontend checks passed. Backend unit run: 45 passed, six
+opt-in live tests skipped and the previously recorded Auckland agenda-date test
+failed in unchanged code. The six reminder integration checks were run separately
+and all passed with fake email delivery. Live API checks confirmed defaults,
+validation, priority persistence, older-client updates, completion, archive/restore,
+metadata retention and cross-user isolation. The repository's post-deployment
+checks also confirmed unauthenticated rejection, matching task IDs across users,
+write-only integration secrets and account-deletion cascades. All temporary
+accounts were removed. Browser checks covered the implemented layout, action
+menus, priority selector, archive view, list-detail navigation and return control;
+no priority changes were saved to the user's lists during those checks.

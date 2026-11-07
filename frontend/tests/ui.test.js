@@ -2,7 +2,7 @@
 const fs = require('fs'), assert = require('assert');
 const html = fs.readFileSync(__dirname + '/../index.html', 'utf8');
 const js = html.match(/<script>([\s\S]*?)<\/script>/g).pop().replace(/<\/?script>/g, '');
-const EXPORTS = 'blCalendarParts,blCalendarIso,blParseCalendarDate,blSwitchCalendar,blDateChanged,blPickDate,blClearDate,blOpenDatePicker,blNavigateDate,blRepeatChanged,blReminderSettingsCard,blReminderDefaults,blSaveReminderDefaults,blReminderStatusHtml,blTrackingData,blDashboardCard,pBacklogTracking,blShowTracking,blShowQueue,blSchedulePreview,blConflicts,blSubAdd,blToggleSubtask,blCompleteLocal,blQueue,blOpen,blReorderTask,blReorderCategory,blToggle,blResetQueue,blDeleteCategory,blCategoryForm,blSaveCategory,blTaskForm,blSaveTask,blDeleteTask,blMove,pBacklog,openBacklog,saveBacklog,archiveBacklog,deleteBacklog,initDemoBacklogs,D,S,boot,R,openF,saveF,parseQ,streakOf,hmCounts,heat,aiCard,aiRun,aiStats,insights,loginView,integCard,quickLog,todayPanel,qaAdd,linkTg,toast,undo,pDash,pTasks,pRoutines,pGoals,pAct,pCal,pSet,tog,del,TODAY,addD,fmt,pick,fillR,setv,testEmail,previewEmail';
+const EXPORTS = 'blBackToLists,blPriority,blOrderedLists,blNote,blCalendarParts,blCalendarIso,blParseCalendarDate,blSwitchCalendar,blDateChanged,blPickDate,blClearDate,blOpenDatePicker,blNavigateDate,blRepeatChanged,blReminderSettingsCard,blReminderDefaults,blSaveReminderDefaults,blReminderStatusHtml,blTrackingData,blDashboardCard,pBacklogTracking,blShowTracking,blShowQueue,blSchedulePreview,blConflicts,blSubAdd,blToggleSubtask,blCompleteLocal,blQueue,blOpen,blReorderTask,blReorderCategory,blToggle,blResetQueue,blDeleteCategory,blCategoryForm,blSaveCategory,blTaskForm,blSaveTask,blDeleteTask,blMove,pBacklog,openBacklog,saveBacklog,archiveBacklog,deleteBacklog,initDemoBacklogs,D,S,boot,R,openF,saveF,parseQ,streakOf,hmCounts,heat,aiCard,aiRun,aiStats,insights,loginView,integCard,quickLog,todayPanel,qaAdd,linkTg,toast,undo,pDash,pTasks,pRoutines,pGoals,pAct,pCal,pSet,tog,del,TODAY,addD,fmt,pick,fillR,setv,testEmail,previewEmail';
 
 function load({ backend = false, token = '', api = {} } = {}) {
   const els = {}, attrs = {}, timers = [], calls = [], toasts = [];
@@ -367,6 +367,36 @@ t('date picker handles backend calendar boundaries without accepting year zero',
  const {X,el}=load(),id=X.D.backlogs[0].id;X.D.cfg.cal='gregory';X.openBacklog(id);el('bl_start').value='9999-12-31T10:00';X.blOpenDatePicker('start');assert(el('bl_start_picker').innerHTML.includes('9999-12-31'));
  X.D.cfg.cal='persian';X.openBacklog(id);el('bl_start').value='0001-01-01T10:00';X.blOpenDatePicker('start');assert(el('bl_start_picker').innerHTML.includes('0001-01-01'));assert(el('bl_start_picker').innerHTML.includes(' disabled'));
  el('bl_title').value='Invalid year';el('bl_start').value='0000-01-01T10:00';await X.saveBacklog(id);assert.notStrictEqual(X.D.backlogs[0].title,'Invalid year');
+});
+
+
+t('Field Notes priorities sort stably and preserve list data',()=>{
+ const {X}=load();assert.deepStrictEqual(X.D.backlogs.map(X.blPriority),['first','second','later','free']);assert.strictEqual(X.blPriority({id:'__proto__'}),'later');
+ const lists=[{id:'list1',title:'Free',priority:'free'},{id:'list2',title:'Later',priority:'later'},{id:'list3',title:'First',priority:'first'},{id:'list4',title:'Second',priority:'second'},{id:'list5',title:'Another later'}];
+ const before=JSON.stringify(lists);assert.deepStrictEqual(X.blOrderedLists(lists).map(x=>x.id),['list3','list4','list2','list5','list1']);assert.strictEqual(JSON.stringify(lists),before);
+});
+t('Field Notes editor saves a priority without losing existing metadata',async()=>{
+ const {X,el}=load(),id=X.D.backlogs[0].id;Object.assign(X.D.backlogs[0],{categories:[{id:'cat1',title:'Research'}],tasks:[{id:'task1',title:'Work',category:'cat1',estimate:180,reminders:{mode:'off'}}],custom_order:true,queue:['task1']});
+ X.openBacklog(id);assert(el('ov').innerHTML.includes('id="bl_priority"'));el('bl_title').value='Keep this title';el('bl_priority').value='free';await X.saveBacklog(id);
+ assert.strictEqual(X.D.backlogs[0].priority,'free');assert.strictEqual(X.D.backlogs[0].tasks[0].estimate,180);assert.deepStrictEqual(X.D.backlogs[0].tasks[0].reminders,{mode:'off'});assert.deepStrictEqual(X.D.backlogs[0].queue,['task1']);
+ assert(X.pBacklog().includes('fn-free'));X.openBacklog(id);el('bl_priority').value='invalid';await X.saveBacklog(id);assert.strictEqual(X.D.backlogs[0].priority,'free');
+});
+t('Field Notes uses real progress, next queue task and escaped list titles',()=>{
+ const {X}=load();const item={id:'list1111',title:'<A project>',priority:'first',custom_order:true,queue:['task2','task1'],tasks:[{id:'task1',title:'Done',done:true},{id:'task2',title:'<Next>'}]};
+ const html=X.blNote(item);assert(html.includes('fn-first')&&html.includes('&lt;A project&gt;')&&html.includes('&lt;Next&gt;'));assert(html.includes('aria-valuenow="50"'));assert(html.includes('Manage list')&&html.includes('Edit list')&&html.includes('Archive')&&html.includes('Delete'));assert(!html.includes('<A project>'));
+});
+t('Field Notes priority update failures preserve saved priority',async()=>{
+ const item={id:'list1111',title:'Project',priority:'second',tasks:[]};const L=load({backend:true,token:'tok',api:{'/api/backlogs':[item],'PUT /api/backlogs/list1111':()=>({__err:'offline'})}});await L.tick();await L.tick();L.X.openBacklog(item.id);L.el('bl_title').value='Project';L.el('bl_priority').value='first';await L.X.saveBacklog(item.id);assert.strictEqual(L.X.D.backlogs[0].priority,'second');
+});
+t('dashboard queue fallback uses priority while keeping scheduled-event selection',()=>{
+ const {X}=load();X.D.backlogs=[{id:'list1',title:'Later',priority:'later',tasks:[{id:'task1',title:'Later task'}]},{id:'list2',title:'First',priority:'first',tasks:[{id:'task2',title:'First task'}]}];
+ assert.strictEqual(X.blTrackingData('2026-11-07T10:00').next.task.id,'task2');X.D.backlogs[0].tasks[0].start='2026-11-07T11:00';assert.strictEqual(X.blTrackingData('2026-11-07T10:00').next.task.id,'task1');
+});
+
+
+t('Field Notes open and back controls reveal the correct section',()=>{
+ const {X,el}=load(),scrolls=[];document.querySelector=selector=>({scrollIntoView:options=>scrolls.push({selector,options})});X.S.pg='backlog';X.blOpen(X.D.backlogs[0].id);assert(el('pg').innerHTML.includes('Back to lists'));assert.strictEqual(scrolls[0].selector,'.bl-notebook-detail');
+ X.blBackToLists();assert.strictEqual(scrolls[1].selector,'.bl-notebook-heading');assert(!el('pg').innerHTML.includes('Back to lists'));
 });
 
 (async () => { let bad = 0; for (const [n, f] of results) { try { await f(); console.log('ok   ' + n) } catch (e) { bad++; console.log('FAIL ' + n + '\n     ' + String(e.stack).split('\n').slice(0, 3).join('\n     ')) } } console.log(bad ? bad + ' failed' : 'all ' + results.length + ' passed'); process.exit(bad ? 1 : 0) })();

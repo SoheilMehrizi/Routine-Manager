@@ -6,7 +6,7 @@ import unittest
 try:
     import sys
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-    from app.backlog import normalize_backlog, complete_backlog
+    from app.backlog import normalize_backlog, complete_backlog, default_backlog_priority
     import datetime as dt
     from fastapi import HTTPException
     from sqlalchemy import JSON, String, create_engine, select
@@ -38,9 +38,10 @@ names = {"normalize_record_data", "list_records", "upsert_record", "delete_recor
 nodes = [n for n in source.body if isinstance(n, ast.FunctionDef) and n.name in names]
 for node in nodes:
     node.decorator_list = []
-    node.args.defaults = []
+    if node.name != "normalize_record_data":
+        node.args.defaults = []  # Strip dependency injection, retain the helper's optional record id.
 scope = dict(User=User, Record=Record, Session=Session, select=select, HTTPException=HTTPException,
-             normalize_backlog=normalize_backlog, complete_backlog=complete_backlog,
+             normalize_backlog=normalize_backlog, complete_backlog=complete_backlog, default_backlog_priority=default_backlog_priority,
              now_utc=lambda:dt.datetime.now(dt.timezone.utc), user_zone=lambda tz:dt.timezone.utc, KINDS={"backlogs"}, ID_RE=re.compile(r"^[A-Za-z0-9_-]{4,40}$"))
 exec(compile(ast.Module(body=nodes, type_ignores=[]), "main.py handlers", "exec"), scope)
 
@@ -88,7 +89,7 @@ class BacklogStorage(unittest.TestCase):
             with self.assertRaises(HTTPException):
                 normalize("backlogs", data)
         self.assertEqual(normalize("backlogs", {"title": " OK ", "id": "fake", "user_id": 2}),
-                         {"title": "OK", "archived": False, "categories": [], "tasks": [], "queue": [], "custom_order": False, "start": "", "deadline": "", "date_conflicts": [], "reminders": None})
+                         {"title": "OK", "archived": False, "categories": [], "tasks": [], "queue": [], "custom_order": False, "start": "", "deadline": "", "date_conflicts": [], "reminders": None, "priority": "later"})
 
 
     def test_nested_data_default_and_mixed_queue(self):
@@ -148,3 +149,34 @@ class BacklogStorage(unittest.TestCase):
         with self.assertRaises(HTTPException) as error:
             handler(item["id"], "task1", {"done": "yes"}, self.a, self.s)
         self.assertEqual(error.exception.status_code, 422)
+
+
+    def test_priority_validation_and_legacy_default_mapping(self):
+        for priority in [None, True, 1, "urgent", []]:
+            with self.assertRaises(ValueError):
+                normalize_backlog({"title": "Test", "priority": priority})
+        for priority in ["first", "second", "later", "free"]:
+            self.assertEqual(normalize_backlog({"title": "Test", "priority": priority})["priority"], priority)
+        self.assertEqual([x["priority"] for x in self.lists(self.a)], ["first", "second", "later", "free"])
+        self.s.add(Record(id="legacy-list", user_id=self.a.id, kind="backlogs", data={"title": "Custom legacy list"}))
+        self.s.commit()
+        self.assertEqual(next(x for x in self.lists(self.a) if x["id"] == "legacy-list")["priority"], "later")
+
+    def test_priority_persists_through_legacy_edits_batch_and_completion(self):
+        item = self.lists(self.a)[0]
+        other = self.lists(self.b)
+        item.update(priority="free", tasks=[{"id": "task1", "title": "Task", "estimate": 30,
+                                            "recurrence": {"unit": "day"}, "reminders": {"mode": "off"}}])
+        result = scope["upsert_record"]("backlogs", item["id"], item, self.a, self.s)
+        legacy = {k: v for k, v in result.items() if k != "priority"}
+        legacy["title"] = "Renamed by older client"
+        result = scope["upsert_record"]("backlogs", item["id"], legacy, self.a, self.s)
+        self.assertEqual(result["priority"], "free")
+        result = scope["save_backlog_batch"]({"items": [legacy]}, self.a, self.s)[0]
+        self.assertEqual(result["priority"], "free")
+        result = scope["complete_backlog_task"](item["id"], "task1", {"done": True}, self.a, self.s)
+        self.assertEqual(result["priority"], "free")
+        self.assertEqual(len(result["tasks"]), 2)
+        self.assertEqual(result["tasks"][1]["estimate"], 30)
+        self.assertEqual(result["tasks"][1]["reminders"], {"mode": "off"})
+        self.assertEqual(self.lists(self.b), other)
