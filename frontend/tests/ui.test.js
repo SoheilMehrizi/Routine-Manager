@@ -2,7 +2,7 @@
 const fs = require('fs'), assert = require('assert');
 const html = fs.readFileSync(__dirname + '/../index.html', 'utf8');
 const js = html.match(/<script>([\s\S]*?)<\/script>/g).pop().replace(/<\/?script>/g, '');
-const EXPORTS = 'blSchedulePreview,blConflicts,blSubAdd,blToggleSubtask,blCompleteLocal,blQueue,blOpen,blReorderTask,blReorderCategory,blToggle,blResetQueue,blDeleteCategory,blCategoryForm,blSaveCategory,blTaskForm,blSaveTask,blDeleteTask,blMove,pBacklog,openBacklog,saveBacklog,archiveBacklog,deleteBacklog,initDemoBacklogs,D,S,boot,R,openF,saveF,parseQ,streakOf,hmCounts,heat,aiCard,aiRun,aiStats,insights,loginView,integCard,quickLog,todayPanel,qaAdd,linkTg,toast,undo,pDash,pTasks,pRoutines,pGoals,pAct,pCal,pSet,tog,del,TODAY,addD,fmt,pick,fillR,setv,testEmail,previewEmail';
+const EXPORTS = 'blTrackingData,blDashboardCard,pBacklogTracking,blShowTracking,blShowQueue,blSchedulePreview,blConflicts,blSubAdd,blToggleSubtask,blCompleteLocal,blQueue,blOpen,blReorderTask,blReorderCategory,blToggle,blResetQueue,blDeleteCategory,blCategoryForm,blSaveCategory,blTaskForm,blSaveTask,blDeleteTask,blMove,pBacklog,openBacklog,saveBacklog,archiveBacklog,deleteBacklog,initDemoBacklogs,D,S,boot,R,openF,saveF,parseQ,streakOf,hmCounts,heat,aiCard,aiRun,aiStats,insights,loginView,integCard,quickLog,todayPanel,qaAdd,linkTg,toast,undo,pDash,pTasks,pRoutines,pGoals,pAct,pCal,pSet,tog,del,TODAY,addD,fmt,pick,fillR,setv,testEmail,previewEmail';
 
 function load({ backend = false, token = '', api = {} } = {}) {
   const els = {}, attrs = {}, timers = [], calls = [], toasts = [];
@@ -264,6 +264,32 @@ t('backlog schedule validation leaves saved tasks intact',async()=>{
 t('backlog server completion failure preserves task and recurrence state',async()=>{
  const item={id:'list1111',title:'A',tasks:[{id:'task1',title:'Keep',done:false,recurrence:{unit:'day',every:1}}]};
  const L=load({backend:true,token:'tok',api:{'/api/backlogs':[item],'POST /api/backlogs/list1111/tasks/task1/completion':()=>({__err:'offline'})}});await L.tick();await L.tick();const before=JSON.stringify(L.X.D.backlogs);await L.X.blToggle(item.id,'task1');assert.strictEqual(JSON.stringify(L.X.D.backlogs),before);
+});
+
+t('backlog dashboard selects one nearest task event and excludes archived/completed work',()=>{
+ const {X}=load();X.D.backlogs=[{id:'list1111',title:'Work',tasks:[{id:'task1',title:'Deadline tomorrow',deadline:'2026-11-08T10:00'},{id:'task2',title:'Starts sooner',start:'2026-11-07T11:00',deadline:'2026-11-09T10:00'},{id:'task3',title:'Completed',done:true,start:'2026-11-07T10:01'},{id:'task4',title:'Old task',deadline:'2026-11-01T10:00'}]},{id:'list2222',title:'Archive',archived:true,tasks:[{id:'task5',title:'Archived task',start:'2026-11-07T10:02'}]}];
+ const data=X.blTrackingData('2026-11-07T10:00');assert.strictEqual(data.next.task.id,'task2');assert.strictEqual(data.overdue.length,1);assert.strictEqual(data.tasks.length,3);
+ const html=X.blDashboardCard('2026-11-07T10:00');assert(html.includes('Starts sooner')&&html.includes('View backlog details'));assert(!html.includes('Deadline tomorrow')&&!html.includes('Old task')&&!html.includes('Archived task'));
+});
+t('backlog dashboard falls back to overdue then queue order and handles empty lists',()=>{
+ const {X}=load();X.D.backlogs=[{id:'list1111',title:'Work',custom_order:true,queue:['task2','task1'],tasks:[{id:'task1',title:'First',deadline:'2026-11-01T10:00'},{id:'task2',title:'Second'}]}];
+ assert.strictEqual(X.blTrackingData('2026-11-07T10:00').next.task.id,'task1');X.D.backlogs[0].tasks[0].deadline='';assert.strictEqual(X.blTrackingData('2026-11-07T10:00').next.task.id,'task2');
+ X.D.backlogs=[];assert(X.blDashboardCard('2026-11-07T10:00').includes('No unfinished backlog tasks.'));assert.strictEqual(X.blTrackingData('2026-11-07T10:00').percent,0);
+});
+t('backlog detailed tracking counts all scopes, progress and completion correctly',()=>{
+ const {X}=load();X.D.backlogs=[{id:'list1111',title:'A',deadline:'2026-11-10T10:00',categories:[{id:'cat1',title:'Scope',deadline:'2026-11-09T10:00'}],tasks:[{id:'task1',title:'Open',category:'cat1',deadline:'2026-11-08T10:00'},{id:'task2',title:'Done',done:true,deadline:'2026-11-01T10:00'}]},{id:'list2222',title:'B',tasks:[{id:'task3',title:'Late',deadline:'2026-11-01T10:00'}]}];
+ let data=X.blTrackingData('2026-11-07T10:00');assert.strictEqual(data.upcoming.length,3);assert.strictEqual(data.overdueDeadlines.length,1);assert.strictEqual(data.percent,33);assert.strictEqual(data.progress[0].percent,50);
+ data=X.blTrackingData('2026-11-07T10:00','list1111');assert.strictEqual(data.total,2);assert.strictEqual(data.percent,50);assert.strictEqual(data.overdue.length,0);
+ X.D.backlogs[0].tasks[0].done=true;data=X.blTrackingData('2026-11-07T10:00','list1111');assert.strictEqual(data.upcoming.length,0);assert.strictEqual(data.percent,100);
+});
+t('backlog tracking links open the correct page and queue, and escape titles',()=>{
+ const {X,el}=load();X.D.backlogs=[{id:'list1111',title:'<Project>',tasks:[{id:'task1',title:'<Task>',deadline:'2027-11-08T10:00'}]}];X.blShowTracking();assert.strictEqual(X.S.pg,'backlog-tracking');assert(el('pg').innerHTML.includes('&lt;Project&gt;'));
+ const html=X.pBacklogTracking('2026-11-07T10:00');assert(html.includes('Queues and progress')&&html.includes('&lt;Task&gt;')&&html.includes('role="progressbar"'));assert(!html.includes('<Project>'));
+ X.blShowQueue('list1111');assert.strictEqual(X.S.pg,'backlog');assert(el('pg').innerHTML.includes('Next in queue'));
+});
+t('backlog dashboard honors saved time zone rather than the browser zone',()=>{
+ const {X}=load();const RealDate=global.Date;const fixed=RealDate.parse('2026-11-07T08:00:00Z');global.Date=class extends RealDate{constructor(...args){super(...(args.length?args:[fixed]))}static now(){return fixed}};
+ try{X.D.backlogs=[{id:'list1111',title:'A',tasks:[{id:'task1',title:'Local deadline',deadline:'2026-11-07T10:00'}]}];X.D.cfg.tz='Asia/Tehran';assert.strictEqual(X.blTrackingData().overdue.length,1);X.D.cfg.tz='UTC';assert.strictEqual(X.blTrackingData().overdue.length,0)}finally{global.Date=RealDate}
 });
 
 (async () => { let bad = 0; for (const [n, f] of results) { try { await f(); console.log('ok   ' + n) } catch (e) { bad++; console.log('FAIL ' + n + '\n     ' + String(e.stack).split('\n').slice(0, 3).join('\n     ')) } } console.log(bad ? bad + ' failed' : 'all ' + results.length + ' passed'); process.exit(bad ? 1 : 0) })();

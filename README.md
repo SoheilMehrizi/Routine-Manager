@@ -83,7 +83,7 @@ custom titles are preserved when changing the interface language.
 
 Lists are stored as user-scoped `backlogs` records; a private `backlog_meta` record
 marks initialization. No schema migration is needed. Writes are acknowledged by
-the server before the interface updates. Dashboard tracking and backlog email reminders are subsequent feature changes.
+the server before the interface updates. Backlog email reminders are the remaining subsequent feature change.
 
 Backlog verification is included in the existing frontend suite and
 `backend/tests/test_backlogs.py` (isolated SQLite storage using the actual API
@@ -163,3 +163,34 @@ authentication, user isolation, and account deletion. Temporary test accounts we
 removed. Browser checks covered the list/category/task forms, an unsaved conflict
 preview, subtask controls and form overflow; no example tasks were saved to the
 user's lists. The local API was rebuilt from the cached dependency image.
+### Dashboard and detailed backlog tracking
+
+The dashboard adds one compact backlog card with **View backlog details**. Among
+unfinished tasks in active lists, it shows the task with the nearest future start
+or deadline (excluding overdue tasks from this first selection). If none qualifies,
+it shows the oldest overdue task, then falls back to the first unfinished task in
+list/queue order. Completed tasks and archived lists are excluded. Ties follow
+list and queue order. Only that one task is shown on the dashboard.
+
+The linked **Backlog tracking** view is also available from the Backlog page.
+Filter by any active list or show all lists. It displays open/overdue task counts,
+upcoming deadline counts, total completion percentage, upcoming and overdue
+deadlines, and per-list progress with expandable ordered queues. Progress is
+completed tasks divided by all tasks, with empty lists shown as 0%. Deadline
+sections include task, category and list deadlines. List/category deadlines are
+omitted when their nonempty task scope is entirely complete; empty scopes retain
+their deadlines. No dates are inherited from parents. **Open queue** opens the
+selected list's saved queue for editing.
+
+All comparisons use the account's saved time zone and minute precision; dates
+use the selected display calendar. Tracking is recalculated when the view renders
+from the same user-scoped records already loaded by the app. This change adds no
+backend endpoints, database schema changes or extra data sharing.
+
+Change 4 verification: all 36 frontend checks passed, covering nearest-event
+selection, overdue/queue fallbacks, completed/archived exclusion, empty states,
+counts and progress, deadline scopes, navigation, title escaping and saved-time-zone
+behavior. Browser checks verified the compact dashboard card, details link,
+list filter, queue navigation and rendered layout. No example tasks or lists were
+saved. The frontend is served directly by the existing Docker bind mount; the
+backend was unchanged, including the previously recorded agenda-date test issue.
