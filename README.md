@@ -266,3 +266,8 @@ Backlog ordering correction: category Move up/down now selects each task by a fi
 id before mapping the reordered category back into the full list. It preserves
 all task metadata and other categories; an existing custom queue remains independent.
 The regression check covers the reported two-task case and interleaved categories.
+
+Backlog recurrence form correction: No repeat hides and disables Repeat every and
+its explanatory text. Selecting a repeat unit shows them immediately; switching
+back and forth preserves the entered interval. Existing recurring tasks open with
+their interval visible.

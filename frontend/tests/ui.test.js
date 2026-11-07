@@ -2,7 +2,7 @@
 const fs = require('fs'), assert = require('assert');
 const html = fs.readFileSync(__dirname + '/../index.html', 'utf8');
 const js = html.match(/<script>([\s\S]*?)<\/script>/g).pop().replace(/<\/?script>/g, '');
-const EXPORTS = 'blReminderSettingsCard,blReminderDefaults,blSaveReminderDefaults,blReminderStatusHtml,blTrackingData,blDashboardCard,pBacklogTracking,blShowTracking,blShowQueue,blSchedulePreview,blConflicts,blSubAdd,blToggleSubtask,blCompleteLocal,blQueue,blOpen,blReorderTask,blReorderCategory,blToggle,blResetQueue,blDeleteCategory,blCategoryForm,blSaveCategory,blTaskForm,blSaveTask,blDeleteTask,blMove,pBacklog,openBacklog,saveBacklog,archiveBacklog,deleteBacklog,initDemoBacklogs,D,S,boot,R,openF,saveF,parseQ,streakOf,hmCounts,heat,aiCard,aiRun,aiStats,insights,loginView,integCard,quickLog,todayPanel,qaAdd,linkTg,toast,undo,pDash,pTasks,pRoutines,pGoals,pAct,pCal,pSet,tog,del,TODAY,addD,fmt,pick,fillR,setv,testEmail,previewEmail';
+const EXPORTS = 'blRepeatChanged,blReminderSettingsCard,blReminderDefaults,blSaveReminderDefaults,blReminderStatusHtml,blTrackingData,blDashboardCard,pBacklogTracking,blShowTracking,blShowQueue,blSchedulePreview,blConflicts,blSubAdd,blToggleSubtask,blCompleteLocal,blQueue,blOpen,blReorderTask,blReorderCategory,blToggle,blResetQueue,blDeleteCategory,blCategoryForm,blSaveCategory,blTaskForm,blSaveTask,blDeleteTask,blMove,pBacklog,openBacklog,saveBacklog,archiveBacklog,deleteBacklog,initDemoBacklogs,D,S,boot,R,openF,saveF,parseQ,streakOf,hmCounts,heat,aiCard,aiRun,aiStats,insights,loginView,integCard,quickLog,todayPanel,qaAdd,linkTg,toast,undo,pDash,pTasks,pRoutines,pGoals,pAct,pCal,pSet,tog,del,TODAY,addD,fmt,pick,fillR,setv,testEmail,previewEmail';
 
 function load({ backend = false, token = '', api = {} } = {}) {
   const els = {}, attrs = {}, timers = [], calls = [], toasts = [];
@@ -323,6 +323,15 @@ t('category Move up/down preserves every task, metadata and unrelated categories
  X.D.backlogs[0].tasks=[original[0],{id:'task3',title:'Other category',category:'cat2'},original[1],{id:'task4',title:'Third',category:'cat1'}];
  await X.blReorderTask(id,'task4',-1,false);assert.deepStrictEqual(X.D.backlogs[0].tasks.map(t=>t.id),['task1','task3','task4','task2']);assert.deepStrictEqual(X.blQueue(X.D.backlogs[0]),['task1','task4','task2','task3']);
  X.D.backlogs[0].custom_order=true;X.D.backlogs[0].queue=['task3','task2','task1','task4'];await X.blReorderTask(id,'task4',-1,false);assert.deepStrictEqual(X.D.backlogs[0].queue,['task3','task2','task1','task4']);
+});
+
+
+t('Repeat every is hidden for No repeat and shown for active recurrence',()=>{
+ const {X,el}=load();X.blTaskForm(X.D.backlogs[0].id);assert(el('ov').innerHTML.includes('id="bl_every_wrap" hidden'));
+ el('bl_repeat').value='';X.blRepeatChanged();assert(el('bl_every_wrap').hidden);assert(el('bl_every').disabled);assert(el('bl_repeat_help').hidden);
+ for(const unit of ['day','week','month']){el('bl_repeat').value=unit;X.blRepeatChanged();assert(!el('bl_every_wrap').hidden);assert(!el('bl_every').disabled);assert(!el('bl_repeat_help').hidden)}
+ el('bl_every').value='3';el('bl_repeat').value='';X.blRepeatChanged();el('bl_repeat').value='week';X.blRepeatChanged();assert.strictEqual(el('bl_every').value,'3');
+ X.D.backlogs[0].tasks=[{id:'task1',title:'Repeat',recurrence:{unit:'week',every:3}}];X.blTaskForm(X.D.backlogs[0].id,'task1');assert(el('ov').innerHTML.includes('id="bl_every_wrap">'));assert(!el('ov').innerHTML.includes('id="bl_every_wrap" hidden'));
 });
 
 (async () => { let bad = 0; for (const [n, f] of results) { try { await f(); console.log('ok   ' + n) } catch (e) { bad++; console.log('FAIL ' + n + '\n     ' + String(e.stack).split('\n').slice(0, 3).join('\n     ')) } } console.log(bad ? bad + ' failed' : 'all ' + results.length + ' passed'); process.exit(bad ? 1 : 0) })();
