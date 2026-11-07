@@ -2,7 +2,7 @@
 const fs = require('fs'), assert = require('assert');
 const html = fs.readFileSync(__dirname + '/../index.html', 'utf8');
 const js = html.match(/<script>([\s\S]*?)<\/script>/g).pop().replace(/<\/?script>/g, '');
-const EXPORTS = 'blTrackingData,blDashboardCard,pBacklogTracking,blShowTracking,blShowQueue,blSchedulePreview,blConflicts,blSubAdd,blToggleSubtask,blCompleteLocal,blQueue,blOpen,blReorderTask,blReorderCategory,blToggle,blResetQueue,blDeleteCategory,blCategoryForm,blSaveCategory,blTaskForm,blSaveTask,blDeleteTask,blMove,pBacklog,openBacklog,saveBacklog,archiveBacklog,deleteBacklog,initDemoBacklogs,D,S,boot,R,openF,saveF,parseQ,streakOf,hmCounts,heat,aiCard,aiRun,aiStats,insights,loginView,integCard,quickLog,todayPanel,qaAdd,linkTg,toast,undo,pDash,pTasks,pRoutines,pGoals,pAct,pCal,pSet,tog,del,TODAY,addD,fmt,pick,fillR,setv,testEmail,previewEmail';
+const EXPORTS = 'blReminderSettingsCard,blReminderDefaults,blSaveReminderDefaults,blReminderStatusHtml,blTrackingData,blDashboardCard,pBacklogTracking,blShowTracking,blShowQueue,blSchedulePreview,blConflicts,blSubAdd,blToggleSubtask,blCompleteLocal,blQueue,blOpen,blReorderTask,blReorderCategory,blToggle,blResetQueue,blDeleteCategory,blCategoryForm,blSaveCategory,blTaskForm,blSaveTask,blDeleteTask,blMove,pBacklog,openBacklog,saveBacklog,archiveBacklog,deleteBacklog,initDemoBacklogs,D,S,boot,R,openF,saveF,parseQ,streakOf,hmCounts,heat,aiCard,aiRun,aiStats,insights,loginView,integCard,quickLog,todayPanel,qaAdd,linkTg,toast,undo,pDash,pTasks,pRoutines,pGoals,pAct,pCal,pSet,tog,del,TODAY,addD,fmt,pick,fillR,setv,testEmail,previewEmail';
 
 function load({ backend = false, token = '', api = {} } = {}) {
   const els = {}, attrs = {}, timers = [], calls = [], toasts = [];
@@ -290,6 +290,27 @@ t('backlog tracking links open the correct page and queue, and escape titles',()
 t('backlog dashboard honors saved time zone rather than the browser zone',()=>{
  const {X}=load();const RealDate=global.Date;const fixed=RealDate.parse('2026-11-07T08:00:00Z');global.Date=class extends RealDate{constructor(...args){super(...(args.length?args:[fixed]))}static now(){return fixed}};
  try{X.D.backlogs=[{id:'list1111',title:'A',tasks:[{id:'task1',title:'Local deadline',deadline:'2026-11-07T10:00'}]}];X.D.cfg.tz='Asia/Tehran';assert.strictEqual(X.blTrackingData().overdue.length,1);X.D.cfg.tz='UTC';assert.strictEqual(X.blTrackingData().overdue.length,0)}finally{global.Date=RealDate}
+});
+
+t('backlog reminder settings are off by default and custom offsets persist',async()=>{
+ const L=load(),X=L.X;assert(X.blReminderSettingsCard().includes('Enable backlog email reminders'));assert(!X.blReminderDefaults().enabled);
+ L.el('bl_defaults_enabled').checked=true;L.el('bl_defaults_start').value='۰، ۶۰';L.el('bl_defaults_deadline').value='1440, 60, 0, 60';L.el('bl_defaults_overdue').value='30';await X.blSaveReminderDefaults();
+ assert.deepStrictEqual(X.D.cfg.backlog_reminders,{enabled:true,start_offsets:[60,0],deadline_offsets:[1440,60,0],overdue_every:30});
+});
+t('backlog item reminder overrides save at list category and task levels',async()=>{
+ const L=load(),X=L.X,id=X.D.backlogs[0].id;X.openBacklog(id);L.el('bl_title').value='List';L.el('bl_item_mode').value='off';await X.saveBacklog(id);assert.deepStrictEqual(X.D.backlogs[0].reminders,{mode:'off'});
+ X.blCategoryForm(id);L.el('bl_name').value='Category';L.el('bl_item_mode').value='custom';L.el('bl_item_start').value='';L.el('bl_item_deadline').value='60, 0';L.el('bl_item_overdue').value='0';await X.blSaveCategory(id,'');let cat=X.D.backlogs[0].categories[0];assert.strictEqual(cat.reminders.mode,'custom');
+ X.blTaskForm(id,'',cat.id);L.el('bl_name').value='Task';L.el('bl_description').value='';L.el('bl_target').value=id;L.el('bl_category').value=cat.id;L.el('bl_item_mode').value='inherit';await X.blSaveTask(id,'');assert.strictEqual(X.D.backlogs[0].tasks[0].reminders,null);
+});
+t('backlog invalid reminder offsets leave saved settings unchanged',async()=>{
+ const L=load(),X=L.X;const before=JSON.stringify(X.D.cfg);L.el('bl_defaults_enabled').checked=true;L.el('bl_defaults_start').value='-1';L.el('bl_defaults_deadline').value='0';L.el('bl_defaults_overdue').value='0';await X.blSaveReminderDefaults();assert.strictEqual(JSON.stringify(X.D.cfg),before);assert(L.el('bl_rem_error').textContent.includes('whole-minute'));
+ L.el('bl_defaults_start').value='0';L.el('bl_defaults_overdue').value='10';await X.blSaveReminderDefaults();assert.strictEqual(JSON.stringify(X.D.cfg),before);
+});
+t('backlog reminder failed settings save preserves opt-in state',async()=>{
+ const L=load({backend:true,token:'tok',api:{'PUT /api/me/prefs':()=>({__err:'offline'})}});await L.tick();await L.tick();L.X.pSet();L.el('bl_defaults_enabled').checked=true;L.el('bl_defaults_start').value='0';L.el('bl_defaults_deadline').value='60';L.el('bl_defaults_overdue').value='0';await L.X.blSaveReminderDefaults();assert(!L.X.blReminderDefaults().enabled);
+});
+t('backlog delivery history escapes titles and shows uncertain deliveries',async()=>{
+ const L=load({backend:true,token:'tok',api:{'/api/backlog-reminders/status':{email:'verified@example.test',email_configured:true,deliveries:[{title:'<script>bad</script>',scope:'Task',event:'deadline',status:'unknown',scheduled_at:'2026-11-07T09:00:00+00:00',error:'Not resent'}]}}});await L.tick();await L.tick();L.X.blReminderSettingsCard();await L.tick();const h=L.X.blReminderStatusHtml();assert(h.includes('verified@example.test')&&h.includes('Delivery uncertain')&&h.includes('&lt;script&gt;'));assert(!h.includes('<script>bad'));
 });
 
 (async () => { let bad = 0; for (const [n, f] of results) { try { await f(); console.log('ok   ' + n) } catch (e) { bad++; console.log('FAIL ' + n + '\n     ' + String(e.stack).split('\n').slice(0, 3).join('\n     ')) } } console.log(bad ? bad + ' failed' : 'all ' + results.length + ' passed'); process.exit(bad ? 1 : 0) })();

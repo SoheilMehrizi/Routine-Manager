@@ -88,7 +88,7 @@ class BacklogStorage(unittest.TestCase):
             with self.assertRaises(HTTPException):
                 normalize("backlogs", data)
         self.assertEqual(normalize("backlogs", {"title": " OK ", "id": "fake", "user_id": 2}),
-                         {"title": "OK", "archived": False, "categories": [], "tasks": [], "queue": [], "custom_order": False, "start": "", "deadline": "", "date_conflicts": []})
+                         {"title": "OK", "archived": False, "categories": [], "tasks": [], "queue": [], "custom_order": False, "start": "", "deadline": "", "date_conflicts": [], "reminders": None})
 
 
     def test_nested_data_default_and_mixed_queue(self):

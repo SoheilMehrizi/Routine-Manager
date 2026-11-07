@@ -4,6 +4,7 @@ import calendar
 import copy
 import datetime as dt
 import uuid
+from .backlog_reminders import normalize_policy
 
 
 def normalize_backlog(data):
@@ -79,6 +80,7 @@ def schedule_fields(data):
             except ValueError:
                 raise ValueError("Invalid schedule date")
         result[key] = value
+    result["reminders"] = normalize_policy(data.get("reminders"))
     return result
 
 

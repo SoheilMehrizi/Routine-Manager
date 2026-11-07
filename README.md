@@ -83,7 +83,7 @@ custom titles are preserved when changing the interface language.
 
 Lists are stored as user-scoped `backlogs` records; a private `backlog_meta` record
 marks initialization. No schema migration is needed. Writes are acknowledged by
-the server before the interface updates. Backlog email reminders are the remaining subsequent feature change.
+the server before the interface updates. Backlog email reminders are available as described below.
 
 Backlog verification is included in the existing frontend suite and
 `backend/tests/test_backlogs.py` (isolated SQLite storage using the actual API
@@ -194,3 +194,70 @@ behavior. Browser checks verified the compact dashboard card, details link,
 list filter, queue navigation and rendered layout. No example tasks or lists were
 saved. The frontend is served directly by the existing Docker bind mount; the
 backend was unchanged, including the previously recorded agenda-date test issue.
+### Customizable backlog email reminders
+
+In **Settings > Backlog email reminders**, opt in and choose default reminder
+minutes for starts and deadlines. Delivery is off by default. Initial choices are
+at the start time, and one day / one hour / at the deadline. Enter comma-separated
+whole minutes; 0 means at the event, and an empty field disables that event.
+Offsets accept up to 12 values, from 0 to 525600 minutes. Optional overdue repeats
+use 0 for off, or an interval of at least 15 minutes (up to 525600).
+
+Each list/category/task editor has an **Email reminders** disclosure with three
+modes: inherit parent settings, custom reminders, or off. Inheritance follows
+account defaults → list → category → task. An explicit child custom policy can
+override a parent's off setting, but the account-wide opt-in is always required.
+Recurring successors preserve their task overrides. Missing dates generate no
+reminders, and no date is inherited from a parent.
+
+Messages go only to the signed-in user's server-verified Google account email,
+through the existing shared SMTP relay. There is no arbitrary recipient field.
+English/Persian messages include titles, list, scheduled time and time zone, with
+escaped HTML and a plain-text alternative. The existing agenda email transport
+still uses STARTTLS on ordinary ports and implicit TLS on port 465.
+
+The existing scheduler checks reminders every 30 seconds after the agenda tick.
+Archived lists and completed tasks are skipped; list/category reminders also stop
+when all tasks in their nonempty scope are complete. A due reminder has a
+three-hour catch-up window. Before-event reminders are not sent after the original
+event time. Repeated overdue reminders use only the latest interval slot, so an
+outage does not replay a backlog of emails. Time-zone conversion uses the saved
+account zone; daylight-saving gaps shift forward, and repeated hours use their
+first occurrence.
+
+The additive `backlog_reminder_deliveries` table stores durable per-user event
+claims and recent status. It is created by the existing startup table-creation
+mechanism. Claims are committed before SMTP delivery; concurrent scheduler runs
+cannot claim the same event twice. Known rejections retry no faster than once per
+minute, up to five attempts while the event is still eligible. A disconnected or
+interrupted send is **Delivery uncertain** and is not automatically resent;
+stale in-flight claims are treated as uncertain after five minutes. SMTP cannot
+prove end-to-end inbox delivery. This favors avoiding duplicate mail when the
+connection outcome is ambiguous.
+
+Settings shows the ten most recent reminder deliveries and a refresh control.
+`GET /api/backlog-reminders/status` is authenticated and returns only the current
+user's verified address, availability, defaults and delivery history. Account
+deletion cascades to delivery history. Existing preference updates that omit
+reminder settings preserve the saved reminder opt-in and policy.
+
+Change 5 verification: all 41 frontend checks passed. Backend unit run: 43 passed,
+six opt-in integration checks skipped, and the same previously recorded Auckland
+agenda-date assertion failed in unchanged code. The six PostgreSQL/API integration
+checks were then run explicitly and all passed, using temporary future-dated
+accounts and an injected fake sender. They cover concurrent claims, retry limits
+and recovery, uncertain/interrupted sends, repeated overdue slots, reminders at
+all three levels, preference preservation, opt-out, completion/archive exclusion,
+user isolation and account-deletion cleanup. SMTP rendering/transport tests cover
+HTML escaping, multipart messages, TLS and uncertain connection outcomes. Browser
+checks covered the default-off checkbox, custom/off item controls and layout.
+No real reminder email was sent; inbox delivery was not tested. Existing SMTP
+configuration is available. The user's reminder opt-in remains off.
+
+To repeat the opt-in integration checks from PowerShell in the project root:
+
+    docker compose run --rm --no-deps -e RUN_BACKLOG_REMINDER_INTEGRATION=1 --volume "${PWD}/backend:/srv:ro" api python -B -m unittest discover -s tests -p test_backlog_reminder_delivery.py -v
+
+These checks create and remove temporary accounts in the configured database;
+all mail is intercepted by a fake sender and their dates cannot trigger the live
+scheduler. The API was rebuilt locally using its cached dependency image.

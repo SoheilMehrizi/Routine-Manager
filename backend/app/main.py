@@ -37,7 +37,8 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sess
 from .logic import (auth_header, build_agenda, build_ai_messages, is_due, safe_public_https_url, schemes_to_try,
                     strip_think, user_zone, validate_stats, valid_agenda_time)
 from .backlog import normalize_backlog, complete_backlog
-from .email_service import MailConfigError, MailDeliveryError, email_configured, send_agenda_email, smtp_config_status
+from .backlog_reminders import normalize_policy, reminder_events, reminder_content
+from .email_service import MailConfigError, MailDeliveryError, email_configured, send_agenda_email, smtp_config_status, send_backlog_reminder_email, MailDeliveryUncertain
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("mel")  # never log tokens, keys or message bodies
@@ -106,6 +107,24 @@ class Delivery(Base):
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     __table_args__ = (UniqueConstraint("user_id", "kind", "local_date"),)
+
+
+class BacklogReminderDelivery(Base):
+    __tablename__ = "backlog_reminder_deliveries"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    event_key: Mapped[str] = mapped_column(String(64))
+    list_id: Mapped[str] = mapped_column(String(40))
+    item_title: Mapped[str] = mapped_column(String(200))
+    scope: Mapped[str] = mapped_column(String(12))
+    event: Mapped[str] = mapped_column(String(16))
+    scheduled_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True))
+    status: Mapped[str] = mapped_column(String(12), default="sending")
+    attempts: Mapped[int] = mapped_column(Integer, default=1)
+    last_error: Mapped[str] = mapped_column(String(200), default="")
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    __table_args__ = (UniqueConstraint("user_id", "event_key"),)
 
 
 Base.metadata.create_all(engine)  # dev only; use Alembic migrations in production
@@ -239,12 +258,79 @@ def run_due_agendas():
                 log.info("agenda channel=%s user=%s date=%s status=%s attempts=%s", channel, user.id, local_date, d.status, d.attempts)
 
 
+def run_due_backlog_reminders(user_id=None, now=None, sender=None):
+    """Durable claims prevent duplicate sends; ambiguous sends are never retried."""
+    if sender is None and not email_configured():
+        return
+    now = now or now_utc()
+    sender = sender or send_backlog_reminder_email
+    with SessionLocal() as s:
+        query = select(User)
+        if user_id is not None:
+            query = query.where(User.id == user_id)
+        for user in s.scalars(query).all():
+            prefs = user.prefs or {}
+            if not normalize_policy(prefs.get("backlog_reminders"), defaults=True)["enabled"]:
+                continue
+            records = s.scalars(select(Record).where(Record.user_id == user.id, Record.kind == "backlogs")).all()
+            for record in records:
+                doc = {**normalize_backlog(record.data), "id": record.id}
+                for event in reminder_events(doc, prefs, now):
+                    delivery = s.scalar(select(BacklogReminderDelivery).where(
+                        BacklogReminderDelivery.user_id == user.id,
+                        BacklogReminderDelivery.event_key == event["key"]).with_for_update())
+                    if delivery:
+                        if delivery.status in ("sent", "unknown"):
+                            continue
+                        elapsed = (now - delivery.updated_at).total_seconds()
+                        if delivery.status == "sending":
+                            if elapsed >= 300:
+                                delivery.status = "unknown"
+                                delivery.last_error = "Delivery interrupted; not resent to avoid duplicates."
+                                delivery.updated_at = now
+                                s.commit()
+                            continue
+                        if delivery.attempts >= 5 or elapsed < 60:
+                            continue
+                        delivery.status, delivery.attempts = "sending", delivery.attempts + 1
+                        delivery.updated_at = now
+                    else:
+                        delivery = BacklogReminderDelivery(user_id=user.id, event_key=event["key"],
+                            list_id=record.id, item_title=event["title"], scope=event["scope"], event=event["event"],
+                            scheduled_at=event["scheduled_at"], status="sending", attempts=1, updated_at=now)
+                        s.add(delivery)
+                    try:
+                        s.commit()  # Persist the send claim before talking to SMTP.
+                    except IntegrityError:
+                        s.rollback()
+                        continue
+                    subject, body = reminder_content(event, prefs.get("lang", "en"))
+                    try:
+                        sender(user.email, subject, body, prefs.get("lang", "en"))
+                        delivery.status, delivery.last_error = "sent", ""
+                    except MailDeliveryUncertain:
+                        delivery.status = "unknown"
+                        delivery.last_error = "SMTP delivery could not be confirmed; not automatically resent."
+                    except (MailConfigError, MailDeliveryError) as exc:
+                        delivery.status, delivery.last_error = "failed", str(exc)[:200]
+                    except Exception:
+                        delivery.status = "unknown"
+                        delivery.last_error = "Delivery interrupted; not automatically resent."
+                    delivery.updated_at = now
+                    s.commit()
+                    log.info("backlog reminder user=%s status=%s attempts=%s", user.id, delivery.status, delivery.attempts)
+
+
 def scheduler_loop(stop: threading.Event):
     while not stop.wait(30):  # tick twice a minute: worst-case start delay is about 30 s plus Telegram latency
         try:
             run_due_agendas()
         except Exception:  # keep the loop alive whatever happens
             log.exception("agenda tick failed")
+        try:
+            run_due_backlog_reminders()
+        except Exception:
+            log.exception("backlog reminder tick failed")
 
 
 @asynccontextmanager
@@ -313,7 +399,7 @@ def me(u: User = Depends(current_user)):
 
 @app.put("/api/me/prefs")
 def set_prefs(prefs: dict, u: User = Depends(current_user), s: Session = Depends(db)):
-    clean = {k: prefs[k] for k in ("lang", "cal", "tz", "theme", "agenda_email", "agenda_time") if k in prefs}
+    clean = {k: prefs[k] for k in ("lang", "cal", "tz", "theme", "agenda_email", "agenda_time", "backlog_reminders") if k in prefs}
     if "agenda_email" in clean:
         clean["agenda_email"] = bool(clean["agenda_email"])
     if "tz" in clean:
@@ -323,6 +409,13 @@ def set_prefs(prefs: dict, u: User = Depends(current_user), s: Session = Depends
             raise HTTPException(422, "Unknown time zone")
     if "agenda_time" in clean and not valid_agenda_time(clean["agenda_time"]):
         raise HTTPException(422, "Agenda time must use 24-hour HH:MM format")
+    if "backlog_reminders" in clean:
+        try:
+            clean["backlog_reminders"] = normalize_policy(clean["backlog_reminders"], defaults=True)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc))
+    elif "backlog_reminders" in (u.prefs or {}):
+        clean["backlog_reminders"] = u.prefs["backlog_reminders"]
     u.prefs = clean
     s.add(u)
     s.commit()
@@ -630,6 +723,20 @@ def ai_recommendations(body: AiIn, u: User = Depends(current_user), s: Session =
     if not text:
         raise HTTPException(502, "The model returned an empty answer")
     return {"text": text, "model": rec.config.get("model")}
+
+
+@app.get("/api/backlog-reminders/status")
+def backlog_reminder_status(u: User = Depends(current_user), s: Session = Depends(db)):
+    configured, _reason = smtp_config_status()
+    rows = s.scalars(select(BacklogReminderDelivery).where(BacklogReminderDelivery.user_id == u.id)
+                     .order_by(BacklogReminderDelivery.updated_at.desc()).limit(10))
+    def display_status(row):
+        return "unknown" if row.status == "sending" and (now_utc() - row.updated_at).total_seconds() >= 300 else row.status
+    return {"email": u.email, "email_configured": configured,
+            "defaults": normalize_policy((u.prefs or {}).get("backlog_reminders"), defaults=True),
+            "deliveries": [{"title": row.item_title, "scope": row.scope, "event": row.event,
+                            "scheduled_at": row.scheduled_at.isoformat(), "status": display_status(row),
+                            "attempts": row.attempts, "error": row.last_error or ("Delivery interrupted; not automatically resent." if display_status(row) == "unknown" else "")} for row in rows]}
 
 
 @app.post("/api/backlogs/{rid}/tasks/{tid}/completion")

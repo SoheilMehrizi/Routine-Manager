@@ -59,6 +59,33 @@ class EmailServiceTests(unittest.TestCase):
         with self.assertRaisesRegex(MailDeliveryError, "account email address is invalid"):
             send_agenda_email("not-an-email", "2026-10-27", "Morning", env=self.env)
 
+    @patch("app.email_service.smtplib.SMTP")
+    def test_backlog_reminder_multipart_and_html_safety(self, smtp_class):
+        from app.email_service import send_backlog_reminder_email
+        send_backlog_reminder_email("user@example.test", "Deadline · <task>", "<script>bad</script>", "fa", env=self.env)
+        msg = smtp_class.return_value.__enter__.return_value.send_message.call_args.args[0]
+        self.assertEqual(msg["To"], "user@example.test")
+        self.assertEqual(msg["Subject"], "Deadline · <task>")
+        self.assertIn('dir="rtl"', msg.get_body(preferencelist=("html",)).get_content())
+        self.assertNotIn("<script>bad", msg.get_body(preferencelist=("html",)).get_content())
+        self.assertEqual(msg.get_body(preferencelist=("plain",)).get_content().strip(), "<script>bad</script>")
+
+    @patch("app.email_service.smtplib.SMTP")
+    def test_lost_connection_after_send_is_uncertain(self, smtp_class):
+        from app.email_service import send_backlog_reminder_email, MailDeliveryUncertain
+        from smtplib import SMTPServerDisconnected
+        smtp_class.return_value.__enter__.return_value.send_message.side_effect = SMTPServerDisconnected("lost")
+        with self.assertRaises(MailDeliveryUncertain):
+            send_backlog_reminder_email("user@example.test", "Reminder", "Body", env=self.env)
+
+    @patch("app.email_service.smtplib.SMTP")
+    def test_connection_failure_before_send_is_retryable(self, smtp_class):
+        from app.email_service import send_backlog_reminder_email, MailDeliveryUncertain
+        smtp_class.side_effect = OSError("offline")
+        with self.assertRaises(MailDeliveryError) as raised:
+            send_backlog_reminder_email("user@example.test", "Reminder", "Body", env=self.env)
+        self.assertNotIsInstance(raised.exception, MailDeliveryUncertain)
+
 
 if __name__ == "__main__":
     unittest.main()

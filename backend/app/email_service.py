@@ -70,7 +70,7 @@ def agenda_email_html(local_date: str, body: str, lang: str = "en", test: bool =
 </table></td></tr></table></body></html>'''
 
 
-def send_agenda_email(recipient: str, local_date: str, body: str, lang: str = "en", test: bool = False, env=os.environ, schedule: str = "07:00") -> None:
+def send_email_message(recipient: str, subject: str, body: str, html_body: str, env=os.environ) -> None:
     configured, reason = smtp_config_status(env)
     if not configured:
         raise MailConfigError(reason)
@@ -79,10 +79,11 @@ def send_agenda_email(recipient: str, local_date: str, body: str, lang: str = "e
     if "@" not in recipient:
         raise MailDeliveryError("The account email address is invalid.")
     msg = EmailMessage()
-    msg["Subject"] = f"{'Test: ' if test else ''}Your daily agenda · {local_date}"
+    msg["Subject"] = subject
     msg["From"], msg["To"] = sender, recipient
     msg.set_content(body)
-    msg.add_alternative(agenda_email_html(local_date, body, lang, test, schedule), subtype="html")
+    msg.add_alternative(html_body, subtype="html")
+    sending = False
     try:
         port = int(env.get("SMTP_PORT", "587"))
         context = ssl.create_default_context()
@@ -90,6 +91,7 @@ def send_agenda_email(recipient: str, local_date: str, body: str, lang: str = "e
             with smtplib.SMTP_SSL(host, port, timeout=20, context=context) as smtp:
                 if env.get("SMTP_USER"):
                     smtp.login(env["SMTP_USER"], env["SMTP_PASSWORD"])
+                sending = True
                 smtp.send_message(msg)
         else:
             with smtplib.SMTP(host, port, timeout=20) as smtp:
@@ -98,6 +100,7 @@ def send_agenda_email(recipient: str, local_date: str, body: str, lang: str = "e
                 smtp.ehlo()
                 if env.get("SMTP_USER"):
                     smtp.login(env["SMTP_USER"], env["SMTP_PASSWORD"])
+                sending = True
                 smtp.send_message(msg)
     except smtplib.SMTPAuthenticationError as exc:
         raise MailDeliveryError("SMTP authentication failed. Check SMTP_USER and SMTP_PASSWORD.") from exc
@@ -105,7 +108,33 @@ def send_agenda_email(recipient: str, local_date: str, body: str, lang: str = "e
         raise MailDeliveryError("The SMTP relay rejected the account email recipient.") from exc
     except smtplib.SMTPNotSupportedError as exc:
         raise MailDeliveryError("The SMTP relay does not support the required secure connection.") from exc
+    except (smtplib.SMTPServerDisconnected, OSError) as exc:
+        if sending:
+            raise MailDeliveryUncertain("SMTP delivery could not be confirmed.") from exc
+        raise MailDeliveryError("Could not connect to the SMTP relay. Check SMTP_HOST and SMTP_PORT.") from exc
     except smtplib.SMTPException as exc:
         raise MailDeliveryError("The SMTP relay rejected the message. Check its settings and sender policy.") from exc
     except (OSError, ValueError) as exc:
         raise MailDeliveryError("Could not connect to the SMTP relay. Check SMTP_HOST and SMTP_PORT.") from exc
+
+
+class MailDeliveryUncertain(MailDeliveryError):
+    """The connection failed after send began, so delivery cannot safely be retried."""
+
+
+def send_agenda_email(recipient: str, local_date: str, body: str, lang: str = "en", test: bool = False, env=os.environ, schedule: str = "07:00") -> None:
+    send_email_message(recipient, f"{'Test: ' if test else ''}Your daily agenda · {local_date}", body,
+                       agenda_email_html(local_date, body, lang, test, schedule), env)
+
+
+def backlog_reminder_html(subject: str, body: str, lang: str = "en") -> str:
+    direction = "rtl" if lang == "fa" else "ltr"
+    return (f'<!doctype html><html lang="{html.escape(lang)}"><body dir="{direction}" '
+            'style="margin:0;padding:24px;background:#f5eff7;font-family:Arial,Helvetica,sans-serif;color:#382340">'
+            '<main style="max-width:620px;margin:auto;background:#fff;border:1px solid #eadfed;border-radius:16px;padding:24px">'
+            '<b>My EveryDay Life</b><h1 style="font-size:22px">'+html.escape(subject)+'</h1>'
+            '<div style="white-space:pre-wrap;line-height:1.8">'+html.escape(body)+'</div></main></body></html>')
+
+
+def send_backlog_reminder_email(recipient: str, subject: str, body: str, lang: str = "en", env=os.environ) -> None:
+    send_email_message(recipient, subject, body, backlog_reminder_html(subject, body, lang), env)
